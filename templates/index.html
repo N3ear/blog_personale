@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Benvenuto</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+</head>
+<body>
+
+<div class="container">
+    <div class="article">
+        <h1>Benvenuto nel blog</h1>
+        <p>Per continuare, accedi o crea un account.</p>
+
+        <div class="stack">
+            <a href="/login"><button>Login</button></a>
+            <a href="/register"><button>Registrati</button></a>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>

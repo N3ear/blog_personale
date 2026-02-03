@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Articoli</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+</head>
+<body>
+
+    <div id="user-bar"></div>
+
+    <div class="container">
+        <h1>Articoli</h1>
+
+        <div id="message" class="message"></div>
+
+        <div class="article">
+            <h4>Nuovo articolo</h4>
+            <div class="stack">
+                <input type="text" id="title" placeholder="Titolo articolo">
+                <textarea id="content" rows="5" placeholder="Contenuto articolo"></textarea>
+                <button onclick="createArticle()">Pubblica</button>
+            </div>
+        </div>
+
+        <div id="articles-container">
+            <p>Caricamento articoli...</p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/articles.js') }}"></script>
+</body>
+</html>
