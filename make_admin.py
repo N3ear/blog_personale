@@ -5,6 +5,6 @@ with app.app_context():
     if user:
         user.is_admin = True
         db.session.commit()
-        print("✅ Utente promosso ad ADMIN")
+        print("Utente promosso ad ADMIN")
     else:
-        print("❌ Utente non trovato")
+        print("Utente non trovato")

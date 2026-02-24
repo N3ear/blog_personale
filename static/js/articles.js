@@ -1,16 +1,44 @@
 // ==========================
 // INFO UTENTE LOGGATO
 // ==========================
+function getToken() {
+    return localStorage.getItem("token");
+}
+
+function getAuthHeaders(extra = {}) {
+    const token = getToken();
+    const headers = { ...extra };
+    if (token) {
+        headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+}
+
+async function authFetch(url, options = {}) {
+    const opts = { ...options };
+    opts.headers = getAuthHeaders(options.headers || {});
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
+        localStorage.removeItem("token");
+        window.location.href = "/login";
+    }
+    return res;
+}
+
 async function loadUser() {
-    const res = await fetch("/api/me");
+    const res = await authFetch("/api/me");
 
     const userBar = document.getElementById("user-bar");
+    const profileLinkContainer = document.getElementById("profile-link-container");
 
     if (res.status === 401) {
         userBar.innerHTML = `
             <p>Non sei loggato.
             <a href="/login">Login</a></p>
         `;
+        if (profileLinkContainer) {
+            profileLinkContainer.innerHTML = "";
+        }
         return;
     }
 
@@ -20,17 +48,21 @@ async function loadUser() {
         <p>Ciao <strong>${user.username}</strong></p>
         <button onclick="logout()">Logout</button>
     `;
+    if (profileLinkContainer) {
+        profileLinkContainer.innerHTML = `<a class="profile-link-btn" href="/profile/${user.username}">Vai al mio profilo</a>`;
+    }
 }
 
 // ==========================
 // LOGOUT
 // ==========================
 async function logout() {
-    const res = await fetch("/api/logout", {
+    const res = await authFetch("/api/logout", {
         method: "POST"
     });
 
     if (res.ok) {
+        localStorage.removeItem("token");
         window.location.href = "/login";
     } else {
         alert("Errore nel logout");
@@ -54,7 +86,7 @@ let currentUser = null;
 
 async function loadCurrentUser() {
     try {
-        const res = await fetch("/api/me");
+        const res = await authFetch("/api/me");
         if (!res.ok) {
             currentUser = null;
             return;
@@ -92,6 +124,7 @@ async function loadArticles() {
 
             div.innerHTML = `
                 <h2>${article.title}</h2>
+                ${article.image ? `<img src="/static/uploads/${article.image}" alt="Immagine articolo" style="max-width: 100%; display: block; border-radius: 10px; margin: 8px 0;">` : ""}
                 <p>${article.content}</p>
                 <small>Autore: ${article.author}</small>
                 ${canManageArticle ? `
@@ -179,23 +212,43 @@ async function loadComments(articleId) {
 async function createArticle() {
     const title = document.getElementById("title").value;
     const content = document.getElementById("content").value;
+    const imageInput = document.getElementById("image");
+    const imageFile = imageInput?.files?.[0];
 
-    const res = await fetch("/api/articles", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ title, content })
-    });
+    const formData = new FormData();
+    formData.append("title", title);
+    formData.append("content", content);
 
-    if (res.ok) {
-        document.getElementById("title").value = "";
-        document.getElementById("content").value = "";
-        loadArticles();
-        showMessage("Articolo creato con successo.", "success");
-    } else {
-        showMessage("Errore nella creazione dell'articolo. Controlla i campi.");
+    if (imageFile) {
+        formData.append("image", imageFile);
     }
+
+    authFetch("/api/articles", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: formData
+    })
+        .then(async response => {
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || "Errore nella creazione dell'articolo");
+            }
+            return data;
+        })
+        .then(data => {
+            console.log("Articolo creato:", data);
+            document.getElementById("title").value = "";
+            document.getElementById("content").value = "";
+            if (imageInput) {
+                imageInput.value = "";
+            }
+            loadArticles();
+            showMessage("Articolo creato con successo.", "success");
+        })
+        .catch(error => {
+            console.error("Errore:", error);
+            showMessage(error.message || "Errore nella creazione dell'articolo.");
+        });
 }
 
 // ==========================
@@ -210,9 +263,10 @@ async function addComment(articleId) {
         return;
     }
 
-    const res = await fetch(`/api/articles/${articleId}/comments`, {
+    const res = await authFetch(`/api/articles/${articleId}/comments`, {
         method: "POST",
         headers: {
+            ...getAuthHeaders(),
             "Content-Type": "application/json"
         },
         body: JSON.stringify({ content })
@@ -240,9 +294,10 @@ async function saveArticle(articleId) {
     const title = document.getElementById(`edit-title-${articleId}`).value;
     const content = document.getElementById(`edit-content-${articleId}`).value;
 
-    const res = await fetch(`/api/articles/${articleId}`, {
+    const res = await authFetch(`/api/articles/${articleId}`, {
         method: "PUT",
         headers: {
+            ...getAuthHeaders(),
             "Content-Type": "application/json"
         },
         body: JSON.stringify({ title, content })
@@ -268,9 +323,10 @@ function toggleEditComment(commentId) {
 async function saveComment(commentId, articleId) {
     const content = document.getElementById(`edit-comment-content-${commentId}`).value;
 
-    const res = await fetch(`/api/comments/${commentId}`, {
+    const res = await authFetch(`/api/comments/${commentId}`, {
         method: "PUT",
         headers: {
+            ...getAuthHeaders(),
             "Content-Type": "application/json"
         },
         body: JSON.stringify({ content })
@@ -293,7 +349,7 @@ async function deleteArticle(articleId) {
         return;
     }
 
-    const res = await fetch(`/api/articles/${articleId}`, {
+    const res = await authFetch(`/api/articles/${articleId}`, {
         method: "DELETE"
     });
 
@@ -314,7 +370,7 @@ async function deleteComment(commentId, articleId) {
         return;
     }
 
-    const res = await fetch(`/api/comments/${commentId}`, {
+    const res = await authFetch(`/api/comments/${commentId}`, {
         method: "DELETE"
     });
 

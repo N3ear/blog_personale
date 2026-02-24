@@ -12,26 +12,47 @@ document.getElementById("loginForm").addEventListener("submit", async function (
     const password = document.getElementById("password").value;
 
     try {
-        const response = await fetch("/api/login", {
+        const res = await fetch("/api/login", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                username: username,
-                password: password
-            })
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+            credentials: "include"
         });
 
-        const data = await response.json();
+        let data = null;
+        try {
+            data = await res.json();
+        } catch (err) {
+            data = null;
+        }
 
-        if (response.ok) {
-            showMessage("Login effettuato. Reindirizzamento in corso...", "success");
+        if (!data) {
+            alert("Errore di rete. Controlla la connessione e riprova.");
+            return;
+        }
+
+        // 👉 Caso 1: utente inesistente → vai alla pagina di registrazione
+        if (data.error === "utente inesistente") {
+            alert("Questo utente non esiste. Registrati per creare un nuovo account.");
+            window.location.href = "/register";
+            return;
+        }
+
+        // 👉 Caso 2: password errata
+        if (data.error === "password errata") {
+            alert("Password errata");
+            return;
+        }
+
+        // 👉 Caso 3: login corretto
+        if (data.message === "Login effettuato") {
+            if (data.token) {
+                localStorage.setItem("token", data.token);
+            }
             window.location.href = "/articles";
-        } else {
-            showMessage(data.error || "Credenziali non valide. Riprova.");
         }
     } catch (err) {
-        showMessage("Errore di rete. Controlla la connessione e riprova.");
+        alert("Errore di rete. Controlla la connessione e riprova.");
     }
 });
+

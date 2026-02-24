@@ -1,31 +1,35 @@
-from flask import Flask, jsonify, request, render_template, Blueprint, redirect, url_for
+from flask import Flask, jsonify, request, render_template, Blueprint, redirect, url_for, abort, g
 from flask_bcrypt import Bcrypt
-from flask_login import (
-    LoginManager,
-    UserMixin,
-    login_user,
-    logout_user,
-    current_user
-)
+from flask_login import UserMixin
 from flask_sqlalchemy import SQLAlchemy
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timedelta
+from werkzeug.utils import secure_filename
+import os
+import uuid
+import time
+import re
+import jwt
+from sqlalchemy.exc import OperationalError
 
 # --- APP ---
 app = Flask(__name__)
+print(">>> STO ESEGUENDO QUESTO app.py <<<")
 
 # --- CONFIG ---
 app.config["SECRET_KEY"] = "questaèunachiavesecret123"
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///blog.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://Vincenzo:123456@db:3306/progetto_links"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+app.config["UPLOAD_FOLDER"] = os.path.join("static", "uploads")
+app.config["PROFILE_IMAGE_FOLDER"] = os.path.join("static", "immagini_profilo")
+app.config["ALLOWED_IMAGE_EXTENSIONS"] = {"png", "jpg", "jpeg", "gif", "webp"}
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+os.makedirs(app.config["PROFILE_IMAGE_FOLDER"], exist_ok=True)
 
 # --- EXTENSIONS ---
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
-login_manager = LoginManager(app)
-login_manager.login_view = "main.login_page"  # ✔ corretto
-login_manager.login_message_category = "info"
-
 # =====================================================
 # MODELS
 # =====================================================
@@ -39,6 +43,12 @@ class User(db.Model, UserMixin):
 
     articles = db.relationship("Article", backref="author", lazy=True)
     comments = db.relationship("Comment", backref="author", lazy=True)
+    
+    
+    profile_name = db.Column(db.String(50), nullable=False)
+    profile_image = db.Column(db.String(255), default="default.png")
+
+
 
     def __repr__(self):
         return f"User('{self.username}', '{self.email}')"
@@ -48,6 +58,7 @@ class Article(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(150), nullable=False)
     content = db.Column(db.Text, nullable=False)
+    image = db.Column(db.String(255), nullable=True)
     author_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     date_posted = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -69,23 +80,29 @@ class Comment(db.Model):
 
 
 # =====================================================
-# LOGIN MANAGER
-# =====================================================
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-
-# =====================================================
 # DECORATORS
 # =====================================================
 
 def login_required_api(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated:
-            return jsonify({"error": "Utente non loggato"}), 401
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Token mancante"}), 401
+
+        token = auth_header.split(" ", 1)[1]
+        try:
+            payload = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token scaduto"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Token non valido"}), 401
+
+        user = User.query.get(payload.get("user_id"))
+        if not user:
+            return jsonify({"error": "Utente non trovato"}), 401
+
+        g.current_user = user
         return f(*args, **kwargs)
     return decorated
 
@@ -93,9 +110,9 @@ def login_required_api(f):
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated:
+        if not getattr(g, "current_user", None):
             return jsonify({"error": "Utente non loggato"}), 401
-        if not current_user.is_admin:
+        if not g.current_user.is_admin:
             return jsonify({"error": "Solo admin"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -115,10 +132,7 @@ api_bp = Blueprint("api", __name__)
 
 @main_bp.before_request
 def require_auth_for_pages():
-    if request.endpoint in ("main.register_page", "main.login_page", "static"):
-        return None
-    if not current_user.is_authenticated:
-        return redirect(url_for("main.register_page"))
+    return None
 
 
 @main_bp.route("/")
@@ -141,6 +155,14 @@ def articles_page():
     return render_template("articles.html")
 
 
+@main_bp.route("/profile/<username>")
+def profile_page(username):
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        abort(404)
+    return render_template("profilo.html", user=user)
+
+
 # =====================================================
 # API AUTH
 # =====================================================
@@ -153,20 +175,64 @@ def register():
 
     if not data.get("username") or not data.get("email") or not data.get("password"):
         return jsonify({"error": "Dati mancanti"}), 400
+    
+    if not isinstance(data["username"], str):
+        return jsonify({"error": "username deve essere una stringa"}), 400
+    
+    if not isinstance(data["email"], str):
+        return jsonify({"error": "email deve essere una stringa"}), 400
+    
+    username = data["username"].strip()
+    email = data["email"].strip().lower()
 
+    if not re.match(r"^[^@]+@[^@]+\.[^@]+$", email):
+        return jsonify({"error": "email non valida"}), 400
+    
+    if not re.match(r"^[A-Za-z0-9_]+$", username):
+        return jsonify({"error": "username puo contenere solo lettere, numeri e underscore"}), 400
+
+    if len(username) < 3 or len(username) > 20:
+        return jsonify({"error": "username deve essere tra 3 e 20 caratteri"}), 400
+    
+    if username == "" or email == "":
+        return jsonify({"error": "username e email non possono essere vuoti"}), 400
+
+    # 1️ Leggo profile_name
+    profile_name = data.get("profile_name", username)
+    
+    if not isinstance(profile_name, str):
+        return jsonify({"error": "profile_name deve essere una stringa"}), 400
+    
+    profile_name = profile_name.strip()
+    
+    if profile_name == "":
+        return jsonify({"error": "profile_name non puo essere vuoto"}), 400
+    
+    profile_name = profile_name.title()
+    
+    if len(profile_name) > 50:
+        return jsonify({"error": "profile_name troppo lungo"}), 400
+    
+
+    # 2️ Controllo duplicati
     if User.query.filter(
-        (User.username == data["username"]) |
-        (User.email == data["email"])
+        (User.username == username) |
+        (User.email == email)
     ).first():
-        return jsonify({"error": "Username o email già esistenti"}), 400
+        return jsonify({"error": "Username o email gia esistenti"}), 400
 
+    # 3️ Hash password
     hashed_pw = bcrypt.generate_password_hash(data["password"]).decode("utf-8")
-    user = User(
-        username=data["username"],
-        email=data["email"],
-        password=hashed_pw
-    )
 
+    # 4️ Creo l’utente
+    user = User(
+        username=username,
+        email=email,
+        password=hashed_pw,
+        profile_name=profile_name,
+        profile_image="default.png"
+    )
+    # 5️ Salvo
     db.session.add(user)
     db.session.commit()
 
@@ -175,22 +241,47 @@ def register():
 
 @api_bp.route("/login", methods=["POST"])
 def login():
-    data = request.get_json()
-    if not data:
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
         return jsonify({"error": "JSON mancante"}), 400
 
-    user = User.query.filter_by(username=data.get("username")).first()
-    if user and bcrypt.check_password_hash(user.password, data.get("password")):
-        login_user(user)
-        return jsonify({"message": "Login effettuato"}), 200
+    username = data.get("username")
+    password = data.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify({"error": "username e password obbligatori"}), 400
 
-    return jsonify({"error": "Credenziali errate"}), 401
+    username = username.strip()
+    if not username or not password:
+        return jsonify({"error": "username e password obbligatori"}), 400
+
+    user = User.query.filter_by(username=username).first()
+    if user is None:
+        return jsonify({"error": "utente inesistente"}), 404
+
+    try:
+        password_ok = bcrypt.check_password_hash(user.password, password)
+    except (ValueError, TypeError):
+        return jsonify({"error": "password errata"}), 401
+
+    if not password_ok:
+        return jsonify({"error": "password errata"}), 401
+
+    payload = {
+        "user_id": user.id,
+        "exp": datetime.utcnow() + timedelta(hours=1)
+    }
+
+    token = jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
+
+    return jsonify({
+        "message": "Login effettuato",
+        "token": token
+    }), 200
 
 
 @api_bp.route("/logout", methods=["POST"])
 @login_required_api
 def logout():
-    logout_user()
     return jsonify({"message": "Logout effettuato"}), 200
 
 
@@ -198,11 +289,44 @@ def logout():
 @login_required_api
 def me():
     return jsonify({
-        "id": current_user.id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "is_admin": current_user.is_admin
+        "id": g.current_user.id,
+        "username": g.current_user.username,
+        "email": g.current_user.email,
+        "is_admin": g.current_user.is_admin
     })
+
+
+@api_bp.route("/profile/<username>", methods=["POST"])
+@login_required_api
+def update_profile(username):
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({"error": "Utente non trovato"}), 404
+
+    if g.current_user.id != user.id and not g.current_user.is_admin:
+        return jsonify({"error": "Non autorizzato"}), 403
+
+    profile_name = request.form.get("profile_name", "").strip()
+    if not profile_name:
+        return jsonify({"error": "Il nome profilo non puo essere vuoto"}), 400
+    if len(profile_name) > 50:
+        return jsonify({"error": "Il nome profilo deve essere massimo 50 caratteri"}), 400
+
+    user.profile_name = profile_name.title()
+
+    profile_image = request.files.get("profile_image")
+    if profile_image and profile_image.filename:
+        safe_name = secure_filename(profile_image.filename)
+        ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+        if ext not in app.config["ALLOWED_IMAGE_EXTENSIONS"]:
+            return jsonify({"error": "Formato immagine non supportato"}), 400
+
+        image_filename = f"{uuid.uuid4().hex}.{ext}"
+        profile_image.save(os.path.join(app.config["PROFILE_IMAGE_FOLDER"], image_filename))
+        user.profile_image = image_filename
+
+    db.session.commit()
+    return jsonify({"message": "Profilo aggiornato", "profile_name": user.profile_name, "profile_image": user.profile_image}), 200
 
 
 # =====================================================
@@ -217,6 +341,7 @@ def get_articles():
             "id": a.id,
             "title": a.title,
             "content": a.content,
+            "image": a.image,
             "author": a.author.username,
             "author_id": a.author_id,
             "date_posted": a.date_posted.strftime("%Y-%m-%d %H:%M")
@@ -227,14 +352,31 @@ def get_articles():
 @api_bp.route("/articles", methods=["POST"])
 @login_required_api
 def create_article():
-    data = request.get_json()
-    if not data or not data.get("title") or not data.get("content"):
+    title = request.form.get("title", "").strip()
+    content = request.form.get("content", "").strip()
+    image = request.files.get("image")
+
+    if not title or not content:
         return jsonify({"error": "Dati mancanti"}), 400
 
+    image_filename = None
+    if image and image.filename:
+        safe_name = secure_filename(image.filename)
+        if not safe_name:
+            return jsonify({"error": "Nome file non valido"}), 400
+
+        ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+        if ext not in app.config["ALLOWED_IMAGE_EXTENSIONS"]:
+            return jsonify({"error": "Formato immagine non supportato"}), 400
+
+        image_filename = f"{uuid.uuid4().hex}.{ext}"
+        image.save(os.path.join(app.config["UPLOAD_FOLDER"], image_filename))
+
     article = Article(
-        title=data["title"],
-        content=data["content"],
-        author_id=current_user.id
+        title=title,
+        content=content,
+        image=image_filename,
+        author_id=g.current_user.id
     )
 
     db.session.add(article)
@@ -248,7 +390,7 @@ def create_article():
 def update_article(article_id):
     article = Article.query.get_or_404(article_id)
 
-    if article.author_id != current_user.id and not current_user.is_admin:
+    if article.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
 
     data = request.get_json()
@@ -264,7 +406,7 @@ def update_article(article_id):
 def delete_article(article_id):
     article = Article.query.get_or_404(article_id)
 
-    if article.author_id != current_user.id and not current_user.is_admin:
+    if article.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
 
     Comment.query.filter_by(article_id=article.id).delete()
@@ -308,7 +450,7 @@ def add_comment(article_id):
     comment = Comment(
         content=data["content"],
         article_id=article_id,
-        author_id=current_user.id
+        author_id=g.current_user.id
     )
 
     db.session.add(comment)
@@ -322,7 +464,7 @@ def add_comment(article_id):
 def delete_comment(comment_id):
     comment = Comment.query.get_or_404(comment_id)
 
-    if comment.author_id != current_user.id and not current_user.is_admin:
+    if comment.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
 
     db.session.delete(comment)
@@ -336,7 +478,7 @@ def delete_comment(comment_id):
 def update_comment(comment_id):
     comment = Comment.query.get_or_404(comment_id)
 
-    if comment.author_id != current_user.id and not current_user.is_admin:
+    if comment.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
 
     data = request.get_json()
@@ -353,7 +495,7 @@ def update_comment(comment_id):
 @api_bp.route("/make-me-admin", methods=["POST"])
 @login_required_api
 def make_me_admin():
-    current_user.is_admin = True
+    g.current_user.is_admin = True
     db.session.commit()
     return jsonify({"message": "Ora sei admin"})
 
@@ -366,7 +508,17 @@ app.register_blueprint(main_bp)
 app.register_blueprint(api_bp, url_prefix="/api")
 
 with app.app_context():
-    db.create_all()
+    max_attempts = 30
+    for attempt in range(1, max_attempts + 1):
+        try:
+            db.create_all()
+            break
+        except OperationalError:
+            if attempt == max_attempts:
+                raise
+            time.sleep(2)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+

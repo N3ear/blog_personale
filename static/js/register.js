@@ -11,6 +11,7 @@ document.getElementById("registerForm").addEventListener("submit", async functio
     const username = document.getElementById("username").value;
     const email = document.getElementById("email").value;
     const password = document.getElementById("password").value;
+    const profile_name = username.trim();
 
     try {
         const response = await fetch("/api/register", {
@@ -18,7 +19,7 @@ document.getElementById("registerForm").addEventListener("submit", async functio
             headers: {
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify({ username, email, password })
+            body: JSON.stringify({ username, email, password, profile_name })
         });
 
         const data = await response.json();

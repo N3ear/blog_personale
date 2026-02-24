@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Profilo di {{ user.username }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="profile-card">
+            <h1>Profilo di {{ user.username }}</h1>
+
+            {% if user.profile_image %}
+                <img
+                    class="profile-avatar"
+                    src="{{ url_for('static', filename='immagini_profilo/' + user.profile_image) }}"
+                    alt="Foto profilo">
+            {% endif %}
+
+            <h2>{{ user.profile_name }}</h2>
+
+            {% if request.args.get("updated") == "1" %}
+                <div class="message success">Profilo aggiornato con successo.</div>
+            {% endif %}
+            {% if request.args.get("error") == "name_required" %}
+                <div class="message error">Il nome profilo non puo essere vuoto.</div>
+            {% endif %}
+            {% if request.args.get("error") == "name_too_long" %}
+                <div class="message error">Il nome profilo deve essere massimo 50 caratteri.</div>
+            {% endif %}
+            {% if request.args.get("error") == "invalid_image" %}
+                <div class="message error">Formato immagine non supportato.</div>
+            {% endif %}
+
+            <div id="profile-message" class="message"></div>
+            <form id="profile-edit-form" class="stack profile-edit-form" data-username="{{ user.username }}" enctype="multipart/form-data" style="display:none;">
+                <input type="text" name="profile_name" value="{{ user.profile_name }}" maxlength="50" required>
+                <input type="file" name="profile_image" accept="image/*">
+                <button type="submit">Salva modifiche profilo</button>
+            </form>
+
+            <a class="profile-link-btn" href="/articles">Torna agli articoli</a>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='js/profile.js') }}"></script>
+</body>
+</html>
