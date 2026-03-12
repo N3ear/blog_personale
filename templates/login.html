@@ -18,8 +18,14 @@
         <input type="password" id="password" placeholder="Password" required>
         <button type="submit">Login</button>
     </form>
+
+    <div class="stack" style="margin-top: 1rem;">
+        <span>Non hai ancora un account?</span>
+        <a href="/register"><button type="button">Registrati</button></a>
+    </div>
 </div>
 
+<script src="{{ url_for('static', filename='js/theme.js') }}"></script>
 <script src="/static/js/login.js?v=3"></script>
 
 </body>

@@ -20,6 +20,12 @@
 
             <h2>{{ user.profile_name }}</h2>
 
+            <div class="stack">
+                <div><strong>Username:</strong> <span id="username"></span></div>
+                <div><strong>Email:</strong> <span id="email"></span></div>
+                <div><strong>Admin:</strong> <span id="is_admin"></span></div>
+            </div>
+
             {% if request.args.get("updated") == "1" %}
                 <div class="message success">Profilo aggiornato con successo.</div>
             {% endif %}
@@ -34,6 +40,9 @@
             {% endif %}
 
             <div id="profile-message" class="message"></div>
+            <button id="profile-edit-btn" type="button" class="profile-link-btn" style="display:none;">
+                Cambia nickname
+            </button>
             <form id="profile-edit-form" class="stack profile-edit-form" data-username="{{ user.username }}" enctype="multipart/form-data" style="display:none;">
                 <input type="text" name="profile_name" value="{{ user.profile_name }}" maxlength="50" required>
                 <input type="file" name="profile_image" accept="image/*">
@@ -43,6 +52,7 @@
             <a class="profile-link-btn" href="/articles">Torna agli articoli</a>
         </div>
     </div>
+    <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
     <script src="{{ url_for('static', filename='js/profile.js') }}"></script>
 </body>
 </html>

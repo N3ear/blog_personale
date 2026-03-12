@@ -18,7 +18,8 @@ print(">>> STO ESEGUENDO QUESTO app.py <<<")
 
 # --- CONFIG ---
 app.config["SECRET_KEY"] = "questaèunachiavesecret123"
-app.config["SQLALCHEMY_DATABASE_URI"] = "mysql+pymysql://Vincenzo:123456@db:3306/progetto_links"
+app.config["TESTING"] = os.getenv("TESTING", "0") == "1"
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "mysql+pymysql://Vincenzo:123456@db:3306/progetto_links")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 app.config["UPLOAD_FOLDER"] = os.path.join("static", "uploads")
@@ -98,7 +99,7 @@ def login_required_api(f):
         except jwt.InvalidTokenError:
             return jsonify({"error": "Token non valido"}), 401
 
-        user = User.query.get(payload.get("user_id"))
+        user = db.session.get(User, payload.get("user_id"))
         if not user:
             return jsonify({"error": "Utente non trovato"}), 401
 
@@ -388,7 +389,9 @@ def create_article():
 @api_bp.route("/articles/<int:article_id>", methods=["PUT"])
 @login_required_api
 def update_article(article_id):
-    article = Article.query.get_or_404(article_id)
+    article = db.session.get(Article, article_id)
+    if not article:
+        abort(404)
 
     if article.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
@@ -404,7 +407,9 @@ def update_article(article_id):
 @api_bp.route("/articles/<int:article_id>", methods=["DELETE"])
 @login_required_api
 def delete_article(article_id):
-    article = Article.query.get_or_404(article_id)
+    article = db.session.get(Article, article_id)
+    if not article:
+        abort(404)
 
     if article.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
@@ -422,7 +427,8 @@ def delete_article(article_id):
 
 @api_bp.route("/articles/<int:article_id>/comments", methods=["GET"])
 def get_comments(article_id):
-    Article.query.get_or_404(article_id)
+    if not db.session.get(Article, article_id):
+        abort(404)
 
     comments = Comment.query.filter_by(article_id=article_id)\
         .order_by(Comment.date_posted.desc()).all()
@@ -441,7 +447,8 @@ def get_comments(article_id):
 @api_bp.route("/articles/<int:article_id>/comments", methods=["POST"])
 @login_required_api
 def add_comment(article_id):
-    Article.query.get_or_404(article_id)
+    if not db.session.get(Article, article_id):
+        abort(404)
     data = request.get_json()
 
     if not data or not data.get("content"):
@@ -462,7 +469,9 @@ def add_comment(article_id):
 @api_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
 @login_required_api
 def delete_comment(comment_id):
-    comment = Comment.query.get_or_404(comment_id)
+    comment = db.session.get(Comment, comment_id)
+    if not comment:
+        abort(404)
 
     if comment.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
@@ -476,7 +485,9 @@ def delete_comment(comment_id):
 @api_bp.route("/comments/<int:comment_id>", methods=["PUT"])
 @login_required_api
 def update_comment(comment_id):
-    comment = Comment.query.get_or_404(comment_id)
+    comment = db.session.get(Comment, comment_id)
+    if not comment:
+        abort(404)
 
     if comment.author_id != g.current_user.id and not g.current_user.is_admin:
         return jsonify({"error": "Non autorizzato"}), 403
@@ -508,17 +519,21 @@ app.register_blueprint(main_bp)
 app.register_blueprint(api_bp, url_prefix="/api")
 
 with app.app_context():
-    max_attempts = 30
-    for attempt in range(1, max_attempts + 1):
-        try:
-            db.create_all()
-            break
-        except OperationalError:
-            if attempt == max_attempts:
-                raise
-            time.sleep(2)
+    if app.config.get("TESTING"):
+        db.create_all()
+    else:
+        max_attempts = 30
+        for attempt in range(1, max_attempts + 1):
+            try:
+                db.create_all()
+                break
+            except OperationalError:
+                if attempt == max_attempts:
+                    raise
+                time.sleep(2)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
 
 
