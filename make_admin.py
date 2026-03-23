@@ -1,3 +1,8 @@
+# Script per creare un utente amministratore manualmente
+# Da usare solo per configurazione iniziale o manutenzione
+
+
+
 from app import app, db, User
 
 with app.app_context():

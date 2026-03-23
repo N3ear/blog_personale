@@ -9,3 +9,4 @@ instance/
 *.db
 *.sqlite
 *.sqlite3
+tempCodeRunnerFile.py

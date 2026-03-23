@@ -1,3 +1,20 @@
+"""
+Inizializzazione dell'app Flask e configurazione principale.
+Questo file crea l'applicazione, carica le estensioni e registra le route.
+"""
+
+# Import delle librerie standard, esterne e dei moduli interni
+
+# Creazione dell'app Flask e configurazione base (chiavi, database, upload, ecc.)
+
+# Inizializzazione delle estensioni (es. SQLAlchemy, Bcrypt, LoginManager, JWT)
+
+# Registrazione delle blueprint e delle route principali
+
+# Avvio dell'applicazione in modalità sviluppo
+
+
+
 from flask import Flask, jsonify, request, render_template, Blueprint, redirect, url_for, abort, g
 from flask_bcrypt import Bcrypt
 from flask_login import UserMixin
@@ -10,7 +27,8 @@ import uuid
 import time
 import re
 import jwt
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, IntegrityError
+from extensions import db
 
 # --- APP ---
 app = Flask(__name__)
@@ -29,8 +47,11 @@ os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["PROFILE_IMAGE_FOLDER"], exist_ok=True)
 
 # --- EXTENSIONS ---
-db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
+db.init_app(app)
+
+# registra modelli definiti in file separati
+from models import Like, Category  # noqa: E402
 # =====================================================
 # MODELS
 # =====================================================
@@ -44,6 +65,7 @@ class User(db.Model, UserMixin):
 
     articles = db.relationship("Article", backref="author", lazy=True)
     comments = db.relationship("Comment", backref="author", lazy=True)
+    likes = db.relationship("Like", backref="user", lazy="dynamic", cascade="all, delete-orphan")
     
     
     profile_name = db.Column(db.String(50), nullable=False)
@@ -61,9 +83,11 @@ class Article(db.Model):
     content = db.Column(db.Text, nullable=False)
     image = db.Column(db.String(255), nullable=True)
     author_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True)
     date_posted = db.Column(db.DateTime, default=datetime.utcnow)
 
     comments = db.relationship("Comment", backref="article", lazy=True)
+    likes = db.relationship("Like", backref="article", lazy="dynamic", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"Article('{self.title}')"
@@ -154,6 +178,10 @@ def register_page():
 @main_bp.route("/articles")
 def articles_page():
     return render_template("articles.html")
+
+@main_bp.route("/categories")
+def categories_page():
+    return render_template("categories.html")
 
 
 @main_bp.route("/profile/<username>")
@@ -336,7 +364,18 @@ def update_profile(username):
 
 @api_bp.route("/articles", methods=["GET"])
 def get_articles():
-    articles = Article.query.all()
+    category_ids = request.args.getlist("category_id", type=int)
+    # support comma-separated single param
+    if len(category_ids) == 1 and request.args.get("category_id"):
+        raw = request.args.get("category_id")
+        if isinstance(raw, str) and "," in raw:
+            category_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
+
+    query = Article.query
+    if category_ids:
+        query = query.filter(Article.category_id.in_(category_ids))
+
+    articles = query.order_by(Article.date_posted.desc()).all()
     return jsonify([
         {
             "id": a.id,
@@ -345,7 +384,10 @@ def get_articles():
             "image": a.image,
             "author": a.author.username,
             "author_id": a.author_id,
-            "date_posted": a.date_posted.strftime("%Y-%m-%d %H:%M")
+            "date_posted": a.date_posted.strftime("%Y-%m-%d %H:%M"),
+            "likes": a.likes.count(),
+            "category": a.category.name if a.category_id else None,
+            "category_id": a.category_id
         } for a in articles
     ])
 
@@ -356,6 +398,8 @@ def create_article():
     title = request.form.get("title", "").strip()
     content = request.form.get("content", "").strip()
     image = request.files.get("image")
+    category_id = request.form.get("category_id", type=int)
+    category_name = request.form.get("category_name", "").strip()
 
     if not title or not content:
         return jsonify({"error": "Dati mancanti"}), 400
@@ -373,11 +417,20 @@ def create_article():
         image_filename = f"{uuid.uuid4().hex}.{ext}"
         image.save(os.path.join(app.config["UPLOAD_FOLDER"], image_filename))
 
+    category = None
+    if category_name:
+        category = _get_or_create_category(category_name)
+    elif category_id is not None:
+        category = db.session.get(Category, category_id)
+        if not category:
+            return jsonify({"error": "Categoria non trovata"}), 404
+
     article = Article(
         title=title,
         content=content,
         image=image_filename,
-        author_id=g.current_user.id
+        author_id=g.current_user.id,
+        category_id=category.id if category else None
     )
 
     db.session.add(article)
@@ -399,6 +452,20 @@ def update_article(article_id):
     data = request.get_json()
     article.title = data.get("title", article.title)
     article.content = data.get("content", article.content)
+
+    if "category_id" in data or "category_name" in data:
+        category_id = data.get("category_id")
+        category_name = data.get("category_name", "").strip() if isinstance(data.get("category_name"), str) else ""
+        if category_name:
+            category = _get_or_create_category(category_name)
+            article.category_id = category.id
+        elif category_id is None:
+            article.category_id = None
+        else:
+            category = db.session.get(Category, category_id)
+            if not category:
+                return jsonify({"error": "Categoria non trovata"}), 404
+            article.category_id = category.id
 
     db.session.commit()
     return jsonify({"message": "Articolo aggiornato"})
@@ -497,6 +564,151 @@ def update_comment(comment_id):
 
     db.session.commit()
     return jsonify({"message": "Commento aggiornato"})
+
+
+# =====================================================
+# API LIKES
+# =====================================================
+
+@api_bp.route("/articles/<int:article_id>/likes", methods=["GET"])
+def get_likes(article_id):
+    article = db.session.get(Article, article_id)
+    if not article:
+        abort(404)
+    return jsonify({"likes": article.likes.count()})
+
+
+@api_bp.route("/articles/<int:article_id>/likes", methods=["POST"])
+@login_required_api
+def add_like(article_id):
+    article = db.session.get(Article, article_id)
+    if not article:
+        abort(404)
+
+    like = Like(user_id=g.current_user.id, article_id=article.id)
+    db.session.add(like)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Hai già messo like a questo articolo"}), 409
+
+    return jsonify({"message": "Like aggiunto"}), 201
+
+
+@api_bp.route("/articles/<int:article_id>/likes", methods=["DELETE"])
+@login_required_api
+def remove_like(article_id):
+    article = db.session.get(Article, article_id)
+    if not article:
+        abort(404)
+
+    like = Like.query.filter_by(user_id=g.current_user.id, article_id=article.id).first()
+    if not like:
+        return jsonify({"error": "Like non trovato"}), 404
+
+    db.session.delete(like)
+    db.session.commit()
+    return jsonify({"message": "Like rimosso"})
+
+
+# =====================================================
+# API CATEGORIES
+# =====================================================
+
+def _slugify(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
+    base = base.strip("-")
+    if not base:
+        base = "categoria"
+    slug = base
+    suffix = 1
+    while Category.query.filter_by(slug=slug).first():
+        suffix += 1
+        slug = f"{base}-{suffix}"
+    return slug
+
+
+def _get_or_create_category(name: str):
+    name = name.strip()
+    if not name:
+        return None
+    existing = Category.query.filter(db.func.lower(Category.name) == name.lower()).first()
+    if existing:
+        return existing
+    slug = _slugify(name)
+    new_cat = Category(name=name, slug=slug)
+    db.session.add(new_cat)
+    db.session.flush()  # ottieni id senza commit separato
+    return new_cat
+
+
+@api_bp.route("/categories", methods=["GET"])
+def list_categories():
+    categories = Category.query.order_by(Category.name).all()
+    return jsonify([
+        {"id": c.id, "name": c.name, "slug": c.slug, "created_at": c.created_at.strftime("%Y-%m-%d")}
+        for c in categories
+    ])
+
+
+@api_bp.route("/categories", methods=["POST"])
+@login_required_api
+def create_category():
+    data = request.get_json()
+    name = (data or {}).get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Nome categoria mancante"}), 400
+
+    slug = _slugify(name)
+    category = Category(name=name, slug=slug)
+    db.session.add(category)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Categoria già esistente"}), 409
+
+    return jsonify({"message": "Categoria creata", "id": category.id, "slug": category.slug}), 201
+
+
+@api_bp.route("/categories/<int:category_id>", methods=["PUT"])
+@login_required_api
+@admin_required
+def update_category(category_id):
+    category = db.session.get(Category, category_id)
+    if not category:
+        abort(404)
+
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Nome categoria mancante"}), 400
+
+    category.name = name
+    category.slug = _slugify(name)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Categoria già esistente"}), 409
+
+    return jsonify({"message": "Categoria aggiornata"})
+
+
+@api_bp.route("/categories/<int:category_id>", methods=["DELETE"])
+@login_required_api
+@admin_required
+def delete_category(category_id):
+    category = db.session.get(Category, category_id)
+    if not category:
+        abort(404)
+
+    # opzionale: scollega articoli dalla categoria
+    Article.query.filter_by(category_id=category.id).update({"category_id": None})
+    db.session.delete(category)
+    db.session.commit()
+    return jsonify({"message": "Categoria eliminata"})
 
 
 # =====================================================

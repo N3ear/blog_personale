@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import pytest
+import random
 
 os.environ["TESTING"] = "1"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -35,3 +36,28 @@ def client():
     with app.app_context():
         db.session.remove()
         db.drop_all()
+
+
+@pytest.fixture
+def auth_client(client):
+    
+    suffix = random.randint(1000, 9999)
+    username = f"user_{suffix}"
+    email = f"test_{suffix}@example.com"
+    password = "password123"
+    
+    client.post("/api/register", json={
+        "username": username,
+        "email":email,
+        "password": password,
+    })
+    
+    login_res = client.post("/api/login", json={
+        "username": username,
+        "password": password,
+    })
+    token = login_res.get_json()["token"]
+    
+    client.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+    
+    return client, username

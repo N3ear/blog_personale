@@ -83,6 +83,7 @@ function showMessage(text, type = "error") {
 }
 
 let currentUser = null;
+let categories = [];
 
 async function loadCurrentUser() {
     try {
@@ -127,6 +128,14 @@ async function loadArticles() {
                 ${article.image ? `<img src="/static/uploads/${article.image}" alt="Immagine articolo" style="max-width: 100%; display: block; border-radius: 10px; margin: 8px 0;">` : ""}
                 <p>${article.content}</p>
                 <small>Autore: ${article.author}</small>
+                <div class="meta-line">
+                    <span class="badge">Like: <span id="like-count-${article.id}">${article.likes}</span></span>
+                    ${article.category ? `<span class="badge">Categoria: ${article.category}</span>` : ""}
+                </div>
+                <div class="like-row">
+                    <button onclick="addLike(${article.id})" aria-label="Mi piace">👍</button>
+                    <button onclick="removeLike(${article.id})" aria-label="Non mi piace">👎</button>
+                </div>
                 ${canManageArticle ? `
                     <button onclick="toggleEditArticle(${article.id})">Modifica articolo</button>
                     <button onclick="deleteArticle(${article.id})">Elimina articolo</button>
@@ -134,6 +143,8 @@ async function loadArticles() {
                 <div id="edit-article-${article.id}" style="display:none; margin-top: 8px;">
                     <input type="text" id="edit-title-${article.id}" value="${article.title}">
                     <textarea id="edit-content-${article.id}" rows="4">${article.content}</textarea>
+                    ${renderCategorySelect(`edit-category-${article.id}`, article.category_id)}
+                    <input type="text" id="edit-category-name-${article.id}" placeholder="Oppure scrivi nuova categoria">
                     <button onclick="saveArticle(${article.id})">Salva</button>
                     <button onclick="toggleEditArticle(${article.id})">Annulla</button>
                 </div>
@@ -214,10 +225,17 @@ async function createArticle() {
     const content = document.getElementById("content").value;
     const imageInput = document.getElementById("image");
     const imageFile = imageInput?.files?.[0];
+    const categoryId = document.getElementById("category-select")?.value || "";
+    const categoryName = document.getElementById("category-name")?.value.trim();
 
     const formData = new FormData();
     formData.append("title", title);
     formData.append("content", content);
+    if (categoryName) {
+        formData.append("category_name", categoryName);
+    } else if (categoryId) {
+        formData.append("category_id", categoryId);
+    }
 
     if (imageFile) {
         formData.append("image", imageFile);
@@ -293,6 +311,8 @@ function toggleEditArticle(articleId) {
 async function saveArticle(articleId) {
     const title = document.getElementById(`edit-title-${articleId}`).value;
     const content = document.getElementById(`edit-content-${articleId}`).value;
+    const categoryId = document.getElementById(`edit-category-${articleId}`)?.value;
+    const categoryName = document.getElementById(`edit-category-name-${articleId}`)?.value.trim();
 
     const res = await authFetch(`/api/articles/${articleId}`, {
         method: "PUT",
@@ -300,7 +320,12 @@ async function saveArticle(articleId) {
             ...getAuthHeaders(),
             "Content-Type": "application/json"
         },
-        body: JSON.stringify({ title, content })
+        body: JSON.stringify({
+            title,
+            content,
+            category_id: categoryId ? Number(categoryId) : null,
+            category_name: categoryName || undefined
+        })
     });
 
     if (res.ok) {
@@ -383,6 +408,78 @@ async function deleteComment(commentId, articleId) {
 }
 
 // AVVIO
-loadArticles();
-loadUser();
-loadArticles();
+async function init() {
+    await loadCategories();
+    loadArticles();
+    loadUser();
+}
+
+init();
+
+// ==========================
+// CATEGORIE
+// ==========================
+function renderCategorySelect(elementId, selectedId = null) {
+    const options = ['<option value="">Senza categoria</option>']
+        .concat(categories.map(c =>
+            `<option value="${c.id}" ${selectedId === c.id ? "selected" : ""}>${c.name}</option>`
+        ));
+    return `<select id="${elementId}" class="select-cat">${options.join("")}</select>`;
+}
+
+async function loadCategories() {
+    try {
+        await loadCurrentUser();
+        const res = await fetch("/api/categories");
+        if (!res.ok) return;
+        categories = await res.json();
+        const select = document.getElementById("category-select");
+        if (select) {
+            select.innerHTML = renderCategorySelect("category-select").replace(/^<select[^>]*>|<\/select>$/g, "");
+        }
+        // aggiorna select negli editor articoli
+        document.querySelectorAll("[id^='edit-category-']").forEach(sel => {
+            const id = sel.id;
+            const current = sel.getAttribute("data-selected-id");
+            sel.innerHTML = renderCategorySelect(id, current ? Number(current) : null).replace(/^<select[^>]*>|<\/select>$/g, "");
+        });
+    } catch (e) {
+        console.error("Errore caricamento categorie", e);
+    }
+}
+
+// ==========================
+// LIKE
+// ==========================
+async function addLike(articleId) {
+    if (!getToken()) {
+        window.location.href = "/login";
+        return;
+    }
+    const res = await authFetch(`/api/articles/${articleId}/likes`, { method: "POST" });
+    await refreshLikes(articleId, res.ok);
+}
+
+async function removeLike(articleId) {
+    if (!getToken()) {
+        window.location.href = "/login";
+        return;
+    }
+    const res = await authFetch(`/api/articles/${articleId}/likes`, { method: "DELETE" });
+    await refreshLikes(articleId, res.ok);
+}
+
+async function refreshLikes(articleId, success) {
+    if (!success) {
+        showMessage("Errore nel mettere/togliere like.");
+        return;
+    }
+    const countRes = await fetch(`/api/articles/${articleId}/likes`);
+    if (countRes.ok) {
+        const data = await countRes.json();
+        const el = document.getElementById(`like-count-${articleId}`);
+        if (el) el.textContent = data.likes;
+    } else {
+        loadArticles();
+    }
+}

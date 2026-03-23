@@ -5,3 +5,4 @@ Flask-Bcrypt
 pymysql
 PyJWT==2.8.0
 pytest
+pytest-cov

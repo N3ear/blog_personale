@@ -100,3 +100,11 @@ blog_personale/
 └── tests/
     ├── conftest.py
     └── test_auth.py
+
+
+STRUTTURA DEL CODICE
+
+app.py  inizializzazione dell’app Flask e configurazione principale
+routes.py  contiene tutte le route (autenticazione, articoli, profilo)
+models.py  definizione dei modelli del database (User, Article)
+make_admin.py  script per creare un utente amministratore

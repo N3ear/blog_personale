@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Categorie</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+</head>
+<body>
+    <div id="user-bar"></div>
+    <div id="profile-link-container"></div>
+
+    <div class="container">
+        <h1>Categorie</h1>
+
+        <div id="message" class="message"></div>
+
+        <div class="article">
+            <h4>Crea nuova categoria</h4>
+            <div class="stack">
+                <input type="text" id="new-category-name" placeholder="Nome categoria">
+                <button onclick="createCategory()">Crea categoria</button>
+            </div>
+        </div>
+
+        <div class="article">
+            <h4>Lista categorie</h4>
+            <div id="category-list" class="category-list"></div>
+        </div>
+
+        <a class="profile-link-btn" href="/articles">Torna agli articoli</a>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/categories.js') }}"></script>
+</body>
+</html>

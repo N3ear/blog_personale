@@ -6,6 +6,53 @@
 
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+    <style>
+        .select-cat {
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #cfd4dc;
+            background: linear-gradient(145deg, #ffffff, #f2f4f8);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+            font-size: 14px;
+        }
+        .select-cat[multiple] {
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.8) 0%, rgba(248,250,252,0.9) 100%),
+                repeating-linear-gradient(90deg, rgba(26, 62, 114, 0.06) 0 1px, transparent 1px 12px);
+            border: 1px dashed rgba(26, 62, 114, 0.25);
+            padding: 8px;
+            min-height: 160px;
+            box-shadow: inset 0 1px 8px rgba(31, 92, 78, 0.08);
+        }
+        #filter-category option {
+            padding: 6px 8px;
+            border-radius: 8px;
+            margin: 2px 0;
+        }
+        #filter-category option:checked {
+            background: linear-gradient(135deg, #1a3e72 0%, #2f6fb8 100%);
+            color: #fff;
+        }
+        .pill-button {
+            border: none;
+            border-radius: 999px;
+            padding: 6px 12px;
+            cursor: pointer;
+            background: #e8f0ff;
+            color: #274690;
+            margin: 4px 4px 4px 0;
+        }
+        .pill-button.danger {
+            background: #ffe8e8;
+            color: #9b1c1c;
+        }
+        .category-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+    </style>
 </head>
 <body>
 
@@ -16,12 +63,16 @@
         <h1>Articoli</h1>
 
         <div id="message" class="message"></div>
+        <a class="profile-link-btn" href="/categories">Gestisci categorie</a>
 
         <div class="article">
             <h4>Nuovo articolo</h4>
             <div class="stack">
                 <input type="text" id="title" placeholder="Titolo articolo">
                 <textarea id="content" rows="5" placeholder="Contenuto articolo"></textarea>
+                <label for="category-select">Categoria (scegli o scrivi nuova)</label>
+                <select id="category-select" class="select-cat"></select>
+                <input type="text" id="category-name" placeholder="Oppure scrivi nuova categoria">
                 <input type="file" id="image" accept="image/*">
                 <button onclick="createArticle()">Pubblica</button>
             </div>
