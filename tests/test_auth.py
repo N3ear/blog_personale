@@ -24,6 +24,62 @@ def test_login_fail(client):
     data = response.get_json()
     assert "error" in data
 
+def test_change_password_success(auth_client):
+    client, username = auth_client
+
+    res = client.post("/api/change-password", json={
+        "current_password": "password123",
+        "new_password": "newpass123"
+    })
+    assert res.status_code == 200
+    assert res.get_json()["message"] == "Password aggiornata"
+
+    login_res = client.post("/api/login", json={
+        "username": username,
+        "password": "newpass123"
+    })
+    assert login_res.status_code == 200
+    assert "token" in login_res.get_json()
+
+def test_change_password_wrong_current(auth_client):
+    client, _ = auth_client
+
+    res = client.post("/api/change-password", json={
+        "current_password": "sbagliata",
+        "new_password": "newpass123"
+    })
+    assert res.status_code == 401
+    assert "error" in res.get_json()
+
+def test_change_password_missing_fields(auth_client):
+    client, _ = auth_client
+
+    res = client.post("/api/change-password", json={
+        "current_password": ""
+    })
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+def test_change_password_invalid_json(auth_client):
+    client, _ = auth_client
+
+    res = client.post(
+        "/api/change-password",
+        data="not-json",
+        headers={"Content-Type": "application/json"}
+    )
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+def test_change_password_no_token(client):
+    res = client.post("/api/change-password", json={
+        "current_password": "password123",
+        "new_password": "newpass123"
+    })
+    assert res.status_code == 401
+    assert "error" in res.get_json()
+
+
 def test_register_success(client):
     res = client.post("/api/register", json={
         "username":"nuovouser",

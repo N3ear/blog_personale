@@ -27,15 +27,41 @@ import uuid
 import time
 import re
 import jwt
+import redis
+import json # trasforma i dati del db in stringhe 
 from sqlalchemy.exc import OperationalError, IntegrityError
 from extensions import db
+from rq import Queue
+
+
+def build_redis_connection(*, decode_responses: bool):
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        return redis.from_url(redis_url, decode_responses=decode_responses)
+
+    redis_host = os.getenv("REDIS_HOST", "localhost")
+    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+    redis_db = int(os.getenv("REDIS_DB", "0"))
+    return redis.Redis(
+        host=redis_host,
+        port=redis_port,
+        db=redis_db,
+        decode_responses=decode_responses,
+    )
+
+
+# cache applicativa: stringhe JSON
+cache = build_redis_connection(decode_responses=True)
+# coda RQ: payload binari/serializzati
+queue_connection = build_redis_connection(decode_responses=False)
+queue = Queue(connection=queue_connection)
 
 # --- APP ---
 app = Flask(__name__)
 print(">>> STO ESEGUENDO QUESTO app.py <<<")
 
 # --- CONFIG ---
-app.config["SECRET_KEY"] = "questaèunachiavesecret123"
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-fallback")
 app.config["TESTING"] = os.getenv("TESTING", "0") == "1"
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "mysql+pymysql://Vincenzo:123456@db:3306/progetto_links")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -107,7 +133,6 @@ class Comment(db.Model):
 # =====================================================
 # DECORATORS
 # =====================================================
-
 def login_required_api(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -192,6 +217,7 @@ def profile_page(username):
     return render_template("profilo.html", user=user)
 
 
+
 # =====================================================
 # API AUTH
 # =====================================================
@@ -264,6 +290,13 @@ def register():
     # 5️ Salvo
     db.session.add(user)
     db.session.commit()
+    
+# metto in coda la funzione di invio email, che verra eseguita da un worker separato
+    from tasks import send_welcome_email
+    queue.enqueue(send_welcome_email, user.email, user.username)
+    
+    print(f"job aggiunto alla coda per {user.email}")
+    return jsonify({"message": "utente registrato, email in arrivo!"}), 201
 
     return jsonify({"message": "Utente registrato"}), 201
 
@@ -325,6 +358,39 @@ def me():
     })
 
 
+@api_bp.route("/change-password", methods=["POST"])
+@login_required_api
+def change_password():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON mancante"}), 400
+
+    current_password = data.get("current_password")
+    new_password = data.get("new_password")
+
+    if not isinstance(current_password, str) or not isinstance(new_password, str):
+        return jsonify({"error": "password obbligatorie"}), 400
+
+    current_password = current_password.strip()
+    new_password = new_password.strip()
+
+    if not current_password or not new_password:
+        return jsonify({"error": "password obbligatorie"}), 400
+
+    try:
+        password_ok = bcrypt.check_password_hash(g.current_user.password, current_password)
+    except (ValueError, TypeError):
+        return jsonify({"error": "password attuale errata"}), 401
+
+    if not password_ok:
+        return jsonify({"error": "password attuale errata"}), 401
+
+    g.current_user.password = bcrypt.generate_password_hash(new_password).decode("utf-8")
+    db.session.commit()
+
+    return jsonify({"message": "Password aggiornata"}), 200
+
+
 @api_bp.route("/profile/<username>", methods=["POST"])
 @login_required_api
 def update_profile(username):
@@ -365,18 +431,21 @@ def update_profile(username):
 @api_bp.route("/articles", methods=["GET"])
 def get_articles():
     category_ids = request.args.getlist("category_id", type=int)
-    # support comma-separated single param
-    if len(category_ids) == 1 and request.args.get("category_id"):
-        raw = request.args.get("category_id")
-        if isinstance(raw, str) and "," in raw:
-            category_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
-
+    cache_key = f"articles_{sorted(category_ids)}"
+    
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        print(" REDIS: Cache Hit per la lista articoli")
+        return jsonify(json.loads(cached_data))
+    
+    print(" DB: Cache Miss, leggo dal database")
     query = Article.query
     if category_ids:
         query = query.filter(Article.category_id.in_(category_ids))
-
+        
     articles = query.order_by(Article.date_posted.desc()).all()
-    return jsonify([
+    
+    articles_data = [
         {
             "id": a.id,
             "title": a.title,
@@ -389,8 +458,10 @@ def get_articles():
             "category": a.category.name if a.category_id else None,
             "category_id": a.category_id
         } for a in articles
-    ])
-
+    ]
+    
+    cache.setex(cache_key, 600, json.dumps(articles_data))  # cache per 10 minuti
+    return jsonify(articles_data)
 
 @api_bp.route("/articles", methods=["POST"])
 @login_required_api
@@ -435,6 +506,10 @@ def create_article():
 
     db.session.add(article)
     db.session.commit()
+    
+    for key in cache.keys("articles_*"):
+        cache.delete(key)
+    print(" REDIS: cache svuotata dopo creazione articolo")
 
     return jsonify({"message": "Articolo creato", "id": article.id}), 201
 
@@ -468,6 +543,8 @@ def update_article(article_id):
             article.category_id = category.id
 
     db.session.commit()
+    for key in cache.keys("articles_*"):
+        cache.delete(key)
     return jsonify({"message": "Articolo aggiornato"})
 
 
@@ -484,6 +561,8 @@ def delete_article(article_id):
     Comment.query.filter_by(article_id=article.id).delete()
     db.session.delete(article)
     db.session.commit()
+    for key in cache.keys("articles_*"):
+        cache.delete(key)
 
     return jsonify({"message": "Articolo eliminato"})
 
@@ -743,7 +822,7 @@ with app.app_context():
                 if attempt == max_attempts:
                     raise
                 time.sleep(2)
-
+                
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 

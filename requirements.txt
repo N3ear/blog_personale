@@ -6,3 +6,5 @@ pymysql
 PyJWT==2.8.0
 pytest
 pytest-cov
+redis==5.0.8
+rq==1.16.2

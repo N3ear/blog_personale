@@ -49,6 +49,15 @@
                 <button type="submit">Salva modifiche profilo</button>
             </form>
 
+            <button id="password-edit-btn" type="button" class="profile-link-btn" style="display:none;">
+                Cambia password
+            </button>
+            <form id="password-edit-form" class="stack profile-edit-form" style="display:none;">
+                <input type="password" name="current_password" placeholder="Password attuale" required>
+                <input type="password" name="new_password" placeholder="Nuova password" required>
+                <button type="submit">Aggiorna password</button>
+            </form>
+
             <a class="profile-link-btn" href="/articles">Torna agli articoli</a>
         </div>
     </div>

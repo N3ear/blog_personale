@@ -1,4 +1,10 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+
   db:
     image: mariadb:11.4
     restart: always
@@ -28,11 +34,32 @@ services:
     restart: always
     ports:
       - "5000:5000"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DATABASE_URL: mysql+pymysql://Vincenzo:123456@db:3306/progetto_links
 
     depends_on:
+      redis:
+        condition: service_started
       db:
         condition: service_healthy
 
+    volumes:
+      - .:/app
+
+  worker:
+    build: .
+    restart: always
+    command: python worker.py
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: mysql+pymysql://Vincenzo:123456@db:3306/progetto_links
+    depends_on:
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
     volumes:
       - .:/app
 
