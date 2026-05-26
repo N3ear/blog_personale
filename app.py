@@ -3,35 +3,34 @@ Inizializzazione dell'app Flask e configurazione principale.
 Questo file crea l'applicazione, carica le estensioni e registra le route.
 """
 
-# Import delle librerie standard, esterne e dei moduli interni
-
-# Creazione dell'app Flask e configurazione base (chiavi, database, upload, ecc.)
-
-# Inizializzazione delle estensioni (es. SQLAlchemy, Bcrypt, LoginManager, JWT)
-
-# Registrazione delle blueprint e delle route principali
-
-# Avvio dell'applicazione in modalità sviluppo
-
-
-
-from flask import Flask, jsonify, request, render_template, Blueprint, redirect, url_for, abort, g
-from flask_bcrypt import Bcrypt
-from flask_login import UserMixin
-from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
 from functools import wraps
-from datetime import datetime, timedelta
-from werkzeug.utils import secure_filename
 import os
-import uuid
 import time
-import re
+
 import jwt
 import redis
-import json # trasforma i dati del db in stringhe 
-from sqlalchemy.exc import OperationalError, IntegrityError
-from extensions import db
+import socket
+import psutil
+from flask import Flask, Blueprint, abort, g, jsonify, render_template, request
+from flask_bcrypt import Bcrypt
+from flask_login import UserMixin
+from flask_socketio import SocketIO
+from flasgger import Swagger
 from rq import Queue
+from sqlalchemy.exc import OperationalError
+
+from extensions import db
+from models import Category, Like
+from services import (
+    AdminService,
+    ArticleService,
+    AuthService,
+    CategoryService,
+    CommentService,
+    LikeService,
+    ProfileService,
+)
 
 
 def build_redis_connection(*, decode_responses: bool):
@@ -50,54 +49,54 @@ def build_redis_connection(*, decode_responses: bool):
     )
 
 
-# cache applicativa: stringhe JSON
 cache = build_redis_connection(decode_responses=True)
-# coda RQ: payload binari/serializzati
 queue_connection = build_redis_connection(decode_responses=False)
 queue = Queue(connection=queue_connection)
 
-# --- APP ---
 app = Flask(__name__)
 print(">>> STO ESEGUENDO QUESTO app.py <<<")
 
-# --- CONFIG ---
+socketio = SocketIO(app, message_queue=os.getenv("REDIS_URL", "redis://redis:6379/0"))
+
+
+@app.route("/")
+def index():
+    """Renderizza la pagina principale dell'applicazione."""
+    return render_template("index.html")
+
+
+swagger = Swagger(app)
+
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-fallback")
 app.config["TESTING"] = os.getenv("TESTING", "0") == "1"
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "mysql+pymysql://Vincenzo:123456@db:3306/progetto_links")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+    "DATABASE_URL",
+    "mysql+pymysql://Vincenzo:123456@db:3306/progetto_links",
+)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
 app.config["UPLOAD_FOLDER"] = os.path.join("static", "uploads")
 app.config["PROFILE_IMAGE_FOLDER"] = os.path.join("static", "immagini_profilo")
 app.config["ALLOWED_IMAGE_EXTENSIONS"] = {"png", "jpg", "jpeg", "gif", "webp"}
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["PROFILE_IMAGE_FOLDER"], exist_ok=True)
 
-# --- EXTENSIONS ---
 bcrypt = Bcrypt(app)
 db.init_app(app)
 
-# registra modelli definiti in file separati
-from models import Like, Category  # noqa: E402
-# =====================================================
-# MODELS
-# =====================================================
+
 
 class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(20), unique=True, nullable=False)
+    username = db.Column(db.String(150), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password = db.Column(db.String(60), nullable=False)
+    password = db.Column(db.String(150), nullable=False)
     is_admin = db.Column(db.Boolean, default=False)
+    profile_name = db.Column(db.String(50), nullable=False)
+    profile_image = db.Column(db.String(150), nullable=True, default='default.png')
 
     articles = db.relationship("Article", backref="author", lazy=True)
     comments = db.relationship("Comment", backref="author", lazy=True)
     likes = db.relationship("Like", backref="user", lazy="dynamic", cascade="all, delete-orphan")
-    
-    
-    profile_name = db.Column(db.String(50), nullable=False)
-    profile_image = db.Column(db.String(255), default="default.png")
-
-
 
     def __repr__(self):
         return f"User('{self.username}', '{self.email}')"
@@ -130,9 +129,6 @@ class Comment(db.Model):
         return f"Comment('{self.content[:20]}...')"
 
 
-# =====================================================
-# DECORATORS
-# =====================================================
 def login_required_api(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -154,6 +150,7 @@ def login_required_api(f):
 
         g.current_user = user
         return f(*args, **kwargs)
+
     return decorated
 
 
@@ -165,20 +162,13 @@ def admin_required(f):
         if not g.current_user.is_admin:
             return jsonify({"error": "Solo admin"}), 403
         return f(*args, **kwargs)
+
     return decorated
 
-
-# =====================================================
-# BLUEPRINTS
-# =====================================================
 
 main_bp = Blueprint("main", __name__)
 api_bp = Blueprint("api", __name__)
 
-
-# =====================================================
-# HTML ROUTES (FRONTEND)
-# =====================================================
 
 @main_bp.before_request
 def require_auth_for_pages():
@@ -187,624 +177,731 @@ def require_auth_for_pages():
 
 @main_bp.route("/")
 def home_page():
+    """Renderizza la home page del frontend."""
     return render_template("index.html")
 
 
 @main_bp.route("/login")
 def login_page():
+    """Renderizza la pagina di accesso."""
     return render_template("login.html")
 
 
 @main_bp.route("/register")
 def register_page():
+    """Renderizza la pagina di registrazione."""
     return render_template("register.html")
 
 
 @main_bp.route("/articles")
 def articles_page():
+    """Renderizza la pagina che mostra gli articoli."""
     return render_template("articles.html")
+
 
 @main_bp.route("/categories")
 def categories_page():
+    """Renderizza la pagina dedicata alle categorie."""
     return render_template("categories.html")
+
+
+@main_bp.route("/dashboard")
+def dashboard_page():
+    """Renderizza la dashboard di monitoraggio del cluster."""
+    return render_template("dashboard.html")
 
 
 @main_bp.route("/profile/<username>")
 def profile_page(username):
+    """Renderizza la pagina profilo dell'utente richiesto."""
     user = User.query.filter_by(username=username).first()
     if not user:
         abort(404)
     return render_template("profilo.html", user=user)
 
 
-
-# =====================================================
-# API AUTH
-# =====================================================
-
 @api_bp.route("/register", methods=["POST"])
 def register():
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "JSON mancante"}), 400
-
-    if not data.get("username") or not data.get("email") or not data.get("password"):
-        return jsonify({"error": "Dati mancanti"}), 400
-    
-    if not isinstance(data["username"], str):
-        return jsonify({"error": "username deve essere una stringa"}), 400
-    
-    if not isinstance(data["email"], str):
-        return jsonify({"error": "email deve essere una stringa"}), 400
-    
-    username = data["username"].strip()
-    email = data["email"].strip().lower()
-
-    if not re.match(r"^[^@]+@[^@]+\.[^@]+$", email):
-        return jsonify({"error": "email non valida"}), 400
-    
-    if not re.match(r"^[A-Za-z0-9_]+$", username):
-        return jsonify({"error": "username puo contenere solo lettere, numeri e underscore"}), 400
-
-    if len(username) < 3 or len(username) > 20:
-        return jsonify({"error": "username deve essere tra 3 e 20 caratteri"}), 400
-    
-    if username == "" or email == "":
-        return jsonify({"error": "username e email non possono essere vuoti"}), 400
-
-    # 1️ Leggo profile_name
-    profile_name = data.get("profile_name", username)
-    
-    if not isinstance(profile_name, str):
-        return jsonify({"error": "profile_name deve essere una stringa"}), 400
-    
-    profile_name = profile_name.strip()
-    
-    if profile_name == "":
-        return jsonify({"error": "profile_name non puo essere vuoto"}), 400
-    
-    profile_name = profile_name.title()
-    
-    if len(profile_name) > 50:
-        return jsonify({"error": "profile_name troppo lungo"}), 400
-    
-
-    # 2️ Controllo duplicati
-    if User.query.filter(
-        (User.username == username) |
-        (User.email == email)
-    ).first():
-        return jsonify({"error": "Username o email gia esistenti"}), 400
-
-    # 3️ Hash password
-    hashed_pw = bcrypt.generate_password_hash(data["password"]).decode("utf-8")
-
-    # 4️ Creo l’utente
-    user = User(
-        username=username,
-        email=email,
-        password=hashed_pw,
-        profile_name=profile_name,
-        profile_image="default.png"
-    )
-    # 5️ Salvo
-    db.session.add(user)
-    db.session.commit()
-    
-# metto in coda la funzione di invio email, che verra eseguita da un worker separato
-    from tasks import send_welcome_email
-    queue.enqueue(send_welcome_email, user.email, user.username)
-    
-    print(f"job aggiunto alla coda per {user.email}")
-    return jsonify({"message": "utente registrato, email in arrivo!"}), 201
-
-    return jsonify({"message": "Utente registrato"}), 201
+    """
+    Registrazione nuovo utente
+    ---
+    tags:
+      - Auth
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          id: UserRegistration
+          required:
+            - username
+            - email
+            - password
+          properties:
+            username:
+              type: string
+              example: vincenzo_dev
+            email:
+              type: string
+              example: vincenzo@test.it
+            password:
+              type: string
+              example: password123
+            profile_name:
+              type: string
+              example: Vincenzo Apulia
+    responses:
+      201:
+        description: Utente creato con successo
+      400:
+        description: Dati mancanti o utente gia esistente
+    """
+    payload, status_code = AuthService.register_user(request.get_json(), bcrypt, queue)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/login", methods=["POST"])
 def login():
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"error": "JSON mancante"}), 400
-
-    username = data.get("username")
-    password = data.get("password")
-    if not isinstance(username, str) or not isinstance(password, str):
-        return jsonify({"error": "username e password obbligatori"}), 400
-
-    username = username.strip()
-    if not username or not password:
-        return jsonify({"error": "username e password obbligatori"}), 400
-
-    user = User.query.filter_by(username=username).first()
-    if user is None:
-        return jsonify({"error": "utente inesistente"}), 404
-
-    try:
-        password_ok = bcrypt.check_password_hash(user.password, password)
-    except (ValueError, TypeError):
-        return jsonify({"error": "password errata"}), 401
-
-    if not password_ok:
-        return jsonify({"error": "password errata"}), 401
-
-    payload = {
-        "user_id": user.id,
-        "exp": datetime.utcnow() + timedelta(hours=1)
-    }
-
-    token = jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
-
-    return jsonify({
-        "message": "Login effettuato",
-        "token": token
-    }), 200
+    """
+    Autentica un utente e restituisce un token JWT
+    ---
+    tags:
+      - Auth
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            username:
+              type: string
+            password:
+              type: string
+    responses:
+      200:
+        description: Login effettuato con successo
+      400:
+        description: Dati mancanti o non validi
+      401:
+        description: Password errata
+      404:
+        description: Utente non trovato
+    """
+    payload, status_code = AuthService.login_user(
+        request.get_json(silent=True),
+        bcrypt,
+        app.config["SECRET_KEY"],
+    )
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/logout", methods=["POST"])
 @login_required_api
 def logout():
+    """
+    Esegue il logout logico dell'utente autenticato
+    ---
+    tags:
+      - Auth
+    responses:
+      200:
+        description: Logout effettuato
+      401:
+        description: Token mancante o non valido
+    """
     return jsonify({"message": "Logout effettuato"}), 200
 
 
 @api_bp.route("/me", methods=["GET"])
 @login_required_api
 def me():
-    return jsonify({
-        "id": g.current_user.id,
-        "username": g.current_user.username,
-        "email": g.current_user.email,
-        "is_admin": g.current_user.is_admin
-    })
+    """
+    Restituisce i dati dell'utente autenticato
+    ---
+    tags:
+      - Auth
+    responses:
+      200:
+        description: Dati utente recuperati con successo
+      401:
+        description: Token mancante o non valido
+    """
+    payload, status_code = AuthService.current_user_payload(g.current_user)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/change-password", methods=["POST"])
 @login_required_api
 def change_password():
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"error": "JSON mancante"}), 400
-
-    current_password = data.get("current_password")
-    new_password = data.get("new_password")
-
-    if not isinstance(current_password, str) or not isinstance(new_password, str):
-        return jsonify({"error": "password obbligatorie"}), 400
-
-    current_password = current_password.strip()
-    new_password = new_password.strip()
-
-    if not current_password or not new_password:
-        return jsonify({"error": "password obbligatorie"}), 400
-
-    try:
-        password_ok = bcrypt.check_password_hash(g.current_user.password, current_password)
-    except (ValueError, TypeError):
-        return jsonify({"error": "password attuale errata"}), 401
-
-    if not password_ok:
-        return jsonify({"error": "password attuale errata"}), 401
-
-    g.current_user.password = bcrypt.generate_password_hash(new_password).decode("utf-8")
-    db.session.commit()
-
-    return jsonify({"message": "Password aggiornata"}), 200
+    """
+    Aggiorna la password dell'utente autenticato
+    ---
+    tags:
+      - Auth
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            current_password:
+              type: string
+            new_password:
+              type: string
+    responses:
+      200:
+        description: Password aggiornata con successo
+      400:
+        description: Dati mancanti o non validi
+      401:
+        description: Password attuale errata o token non valido
+    """
+    payload, status_code = AuthService.change_password(
+        g.current_user,
+        request.get_json(silent=True),
+        bcrypt,
+    )
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/profile/<username>", methods=["POST"])
 @login_required_api
 def update_profile(username):
-    user = User.query.filter_by(username=username).first()
-    if not user:
-        return jsonify({"error": "Utente non trovato"}), 404
+    """
+    Aggiorna il profilo di un utente
+    ---
+    tags:
+      - Profile
+    parameters:
+      - name: username
+        in: path
+        type: string
+        required: true
+        description: Username dell'utente da aggiornare
+      - name: profile_name
+        in: formData
+        type: string
+        required: true
+        description: Nuovo nome profilo
+      - name: profile_image
+        in: formData
+        type: file
+        required: false
+        description: Immagine del profilo
+    responses:
+      200:
+        description: Profilo aggiornato con successo
+      400:
+        description: Dati profilo non validi
+      403:
+        description: Utente non autorizzato
+      404:
+        description: Utente non trovato
+    """
+    payload, status_code = ProfileService.update_profile(
+        username,
+        g.current_user,
+        request.form,
+        request.files,
+        app.config,
+    )
+    return jsonify(payload), status_code
 
-    if g.current_user.id != user.id and not g.current_user.is_admin:
-        return jsonify({"error": "Non autorizzato"}), 403
-
-    profile_name = request.form.get("profile_name", "").strip()
-    if not profile_name:
-        return jsonify({"error": "Il nome profilo non puo essere vuoto"}), 400
-    if len(profile_name) > 50:
-        return jsonify({"error": "Il nome profilo deve essere massimo 50 caratteri"}), 400
-
-    user.profile_name = profile_name.title()
-
-    profile_image = request.files.get("profile_image")
-    if profile_image and profile_image.filename:
-        safe_name = secure_filename(profile_image.filename)
-        ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
-        if ext not in app.config["ALLOWED_IMAGE_EXTENSIONS"]:
-            return jsonify({"error": "Formato immagine non supportato"}), 400
-
-        image_filename = f"{uuid.uuid4().hex}.{ext}"
-        profile_image.save(os.path.join(app.config["PROFILE_IMAGE_FOLDER"], image_filename))
-        user.profile_image = image_filename
-
-    db.session.commit()
-    return jsonify({"message": "Profilo aggiornato", "profile_name": user.profile_name, "profile_image": user.profile_image}), 200
-
-
-# =====================================================
-# API ARTICLES
-# =====================================================
 
 @api_bp.route("/articles", methods=["GET"])
 def get_articles():
-    category_ids = request.args.getlist("category_id", type=int)
-    cache_key = f"articles_{sorted(category_ids)}"
-    
-    cached_data = cache.get(cache_key)
-    if cached_data:
-        print(" REDIS: Cache Hit per la lista articoli")
-        return jsonify(json.loads(cached_data))
-    
-    print(" DB: Cache Miss, leggo dal database")
-    query = Article.query
-    if category_ids:
-        query = query.filter(Article.category_id.in_(category_ids))
-        
-    articles = query.order_by(Article.date_posted.desc()).all()
-    
-    articles_data = [
-        {
-            "id": a.id,
-            "title": a.title,
-            "content": a.content,
-            "image": a.image,
-            "author": a.author.username,
-            "author_id": a.author_id,
-            "date_posted": a.date_posted.strftime("%Y-%m-%d %H:%M"),
-            "likes": a.likes.count(),
-            "category": a.category.name if a.category_id else None,
-            "category_id": a.category_id
-        } for a in articles
-    ]
-    
-    cache.setex(cache_key, 600, json.dumps(articles_data))  # cache per 10 minuti
-    return jsonify(articles_data)
+    """
+    Restituisce la lista degli articoli
+    ---
+    tags:
+      - Articles
+    parameters:
+      - name: category_id
+        in: query
+        type: integer
+        required: false
+        description: ID della categoria per filtrare gli articoli
+    responses:
+      200:
+        description: Lista articoli recuperata con successo
+    """
+    payload, status_code = ArticleService.get_articles(
+        request.args.getlist("category_id", type=int),
+        cache,
+    )
+    return jsonify(payload), status_code
+
 
 @api_bp.route("/articles", methods=["POST"])
 @login_required_api
 def create_article():
-    title = request.form.get("title", "").strip()
-    content = request.form.get("content", "").strip()
-    image = request.files.get("image")
-    category_id = request.form.get("category_id", type=int)
-    category_name = request.form.get("category_name", "").strip()
-
-    if not title or not content:
-        return jsonify({"error": "Dati mancanti"}), 400
-
-    image_filename = None
-    if image and image.filename:
-        safe_name = secure_filename(image.filename)
-        if not safe_name:
-            return jsonify({"error": "Nome file non valido"}), 400
-
-        ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
-        if ext not in app.config["ALLOWED_IMAGE_EXTENSIONS"]:
-            return jsonify({"error": "Formato immagine non supportato"}), 400
-
-        image_filename = f"{uuid.uuid4().hex}.{ext}"
-        image.save(os.path.join(app.config["UPLOAD_FOLDER"], image_filename))
-
-    category = None
-    if category_name:
-        category = _get_or_create_category(category_name)
-    elif category_id is not None:
-        category = db.session.get(Category, category_id)
-        if not category:
-            return jsonify({"error": "Categoria non trovata"}), 404
-
-    article = Article(
-        title=title,
-        content=content,
-        image=image_filename,
-        author_id=g.current_user.id,
-        category_id=category.id if category else None
+    """
+    Crea un nuovo articolo
+    ---
+    tags:
+      - Articles
+    consumes:
+      - multipart/form-data
+    parameters:
+      - name: title
+        in: formData
+        type: string
+        required: true
+        description: Titolo dell'articolo (min 5 car.)
+      - name: content
+        in: formData
+        type: string
+        required: true
+        description: Contenuto dell'articolo (min 10 car.)
+      - name: category_id
+        in: formData
+        type: integer
+        required: false
+        description: ID della categoria
+      - name: category_name
+        in: formData
+        type: string
+        required: false
+        description: Nome di una nuova categoria
+      - name: image
+        in: formData
+        type: file
+        required: false
+        description: Immagine dell'articolo
+    responses:
+      201:
+        description: Articolo creato con successo
+      400:
+        description: Errore di validazione
+    """
+    payload, status_code = ArticleService.create_article(
+        request.form,
+        request.files,
+        g.current_user,
+        cache,
+        app.config,
     )
-
-    db.session.add(article)
-    db.session.commit()
-    
-    for key in cache.keys("articles_*"):
-        cache.delete(key)
-    print(" REDIS: cache svuotata dopo creazione articolo")
-
-    return jsonify({"message": "Articolo creato", "id": article.id}), 201
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/articles/<int:article_id>", methods=["PUT"])
 @login_required_api
 def update_article(article_id):
-    article = db.session.get(Article, article_id)
-    if not article:
-        abort(404)
-
-    if article.author_id != g.current_user.id and not g.current_user.is_admin:
-        return jsonify({"error": "Non autorizzato"}), 403
-
-    data = request.get_json()
-    article.title = data.get("title", article.title)
-    article.content = data.get("content", article.content)
-
-    if "category_id" in data or "category_name" in data:
-        category_id = data.get("category_id")
-        category_name = data.get("category_name", "").strip() if isinstance(data.get("category_name"), str) else ""
-        if category_name:
-            category = _get_or_create_category(category_name)
-            article.category_id = category.id
-        elif category_id is None:
-            article.category_id = None
-        else:
-            category = db.session.get(Category, category_id)
-            if not category:
-                return jsonify({"error": "Categoria non trovata"}), 404
-            article.category_id = category.id
-
-    db.session.commit()
-    for key in cache.keys("articles_*"):
-        cache.delete(key)
-    return jsonify({"message": "Articolo aggiornato"})
+    """
+    Aggiorna un articolo esistente
+    ---
+    tags:
+      - Articles
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+        description: ID dell'articolo da aggiornare
+      - name: body
+        in: body
+        required: false
+        schema:
+          type: object
+          properties:
+            title:
+              type: string
+            content:
+              type: string
+            category_id:
+              type: integer
+            category_name:
+              type: string
+    responses:
+      200:
+        description: Articolo aggiornato con successo
+      401:
+        description: Token mancante o non valido
+      403:
+        description: Utente non autorizzato
+      404:
+        description: Articolo o categoria non trovati
+    """
+    payload, status_code = ArticleService.update_article(
+        article_id,
+        request.get_json(),
+        g.current_user,
+        cache,
+    )
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/articles/<int:article_id>", methods=["DELETE"])
 @login_required_api
 def delete_article(article_id):
-    article = db.session.get(Article, article_id)
-    if not article:
-        abort(404)
-
-    if article.author_id != g.current_user.id and not g.current_user.is_admin:
-        return jsonify({"error": "Non autorizzato"}), 403
-
-    Comment.query.filter_by(article_id=article.id).delete()
-    db.session.delete(article)
-    db.session.commit()
-    for key in cache.keys("articles_*"):
-        cache.delete(key)
-
+    """
+    Elimina un articolo esistente
+    ---
+    tags:
+      - Articles
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+        description: ID dell'articolo da eliminare
+    responses:
+      200:
+        description: Articolo eliminato con successo
+      401:
+        description: Token mancante o non valido
+      403:
+        description: Utente non autorizzato
+      404:
+        description: Articolo non trovato
+    """
+    ArticleService.delete_article(article_id, g.current_user, cache)
     return jsonify({"message": "Articolo eliminato"})
 
 
-# =====================================================
-# API COMMENTS
-# =====================================================
-
 @api_bp.route("/articles/<int:article_id>/comments", methods=["GET"])
 def get_comments(article_id):
-    if not db.session.get(Article, article_id):
-        abort(404)
-
-    comments = Comment.query.filter_by(article_id=article_id)\
-        .order_by(Comment.date_posted.desc()).all()
-
-    return jsonify([
-        {
-            "id": c.id,
-            "content": c.content,
-            "author": c.author.username,
-            "author_id": c.author_id,
-            "date_posted": c.date_posted.strftime("%Y-%m-%d %H:%M")
-        } for c in comments
-    ])
+    """
+    Restituisce i commenti di un articolo
+    ---
+    tags:
+      - Comments
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+        description: ID dell'articolo
+    responses:
+      200:
+        description: Lista commenti recuperata con successo
+      404:
+        description: Articolo non trovato
+    """
+    payload, status_code = CommentService.get_comments(article_id)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/articles/<int:article_id>/comments", methods=["POST"])
 @login_required_api
 def add_comment(article_id):
-    if not db.session.get(Article, article_id):
-        abort(404)
+    """
+    Aggiunge un commento a un articolo
+    ---
+    tags:
+      - Comments
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          id: Comment
+          required:
+            - content
+          properties:
+            content:
+              type: string
+              description: Contenuto del commento
+              example: "Bellissimo articolo!"
+    responses:
+      201:
+        description: Commento aggiunto con successo
+      400:
+        description: Contenuto mancante
+    """
     data = request.get_json()
-
-    if not data or not data.get("content"):
-        return jsonify({"error": "Contenuto mancante"}), 400
-
-    comment = Comment(
-        content=data["content"],
-        article_id=article_id,
-        author_id=g.current_user.id
+    payload, status_code = CommentService.add_comment(
+        article_id,
+        data,
+        g.current_user,
     )
-
-    db.session.add(comment)
-    db.session.commit()
-
-    return jsonify({"message": "Commento aggiunto"}), 201
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
 @login_required_api
 def delete_comment(comment_id):
-    comment = db.session.get(Comment, comment_id)
-    if not comment:
-        abort(404)
-
-    if comment.author_id != g.current_user.id and not g.current_user.is_admin:
-        return jsonify({"error": "Non autorizzato"}), 403
-
-    db.session.delete(comment)
-    db.session.commit()
-
-    return jsonify({"message": "Commento eliminato"})
+    """
+    Elimina un commento esistente
+    ---
+    tags:
+      - Comments
+    parameters:
+      - name: comment_id
+        in: path
+        type: integer
+        required: true
+        description: ID del commento da eliminare
+    responses:
+      200:
+        description: Commento eliminato con successo
+      401:
+        description: Token mancante o non valido
+      403:
+        description: Utente non autorizzato
+      404:
+        description: Commento non trovato
+    """
+    payload, status_code = CommentService.delete_comment(comment_id, g.current_user)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/comments/<int:comment_id>", methods=["PUT"])
 @login_required_api
 def update_comment(comment_id):
-    comment = db.session.get(Comment, comment_id)
-    if not comment:
-        abort(404)
+    """
+    Aggiorna un commento esistente
+    ---
+    tags:
+      - Comments
+    parameters:
+      - name: comment_id
+        in: path
+        type: integer
+        required: true
+        description: ID del commento da aggiornare
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            content:
+              type: string
+    responses:
+      200:
+        description: Commento aggiornato con successo
+      401:
+        description: Token mancante o non valido
+      403:
+        description: Utente non autorizzato
+      404:
+        description: Commento non trovato
+    """
+    payload, status_code = CommentService.update_comment(
+        comment_id,
+        request.get_json(),
+        g.current_user,
+    )
+    return jsonify(payload), status_code
 
-    if comment.author_id != g.current_user.id and not g.current_user.is_admin:
-        return jsonify({"error": "Non autorizzato"}), 403
-
-    data = request.get_json()
-    comment.content = data.get("content", comment.content)
-
-    db.session.commit()
-    return jsonify({"message": "Commento aggiornato"})
-
-
-# =====================================================
-# API LIKES
-# =====================================================
 
 @api_bp.route("/articles/<int:article_id>/likes", methods=["GET"])
 def get_likes(article_id):
-    article = db.session.get(Article, article_id)
-    if not article:
-        abort(404)
-    return jsonify({"likes": article.likes.count()})
+    """
+    Restituisce il numero di like di un articolo
+    ---
+    tags:
+      - Likes
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+        description: ID dell'articolo
+    responses:
+      200:
+        description: Conteggio like recuperato con successo
+      404:
+        description: Articolo non trovato
+    """
+    payload, status_code = LikeService.get_likes(article_id)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/articles/<int:article_id>/likes", methods=["POST"])
 @login_required_api
 def add_like(article_id):
-    article = db.session.get(Article, article_id)
-    if not article:
-        abort(404)
-
-    like = Like(user_id=g.current_user.id, article_id=article.id)
-    db.session.add(like)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({"error": "Hai già messo like a questo articolo"}), 409
-
-    return jsonify({"message": "Like aggiunto"}), 201
+    """
+    Aggiunge un like a un articolo
+    ---
+    tags:
+      - Likes
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+        description: ID dell'articolo
+    responses:
+      201:
+        description: Like aggiunto con successo
+      401:
+        description: Token mancante o non valido
+      404:
+        description: Articolo non trovato
+      409:
+        description: Like gia presente
+    """
+    payload, status_code = LikeService.add_like(article_id, g.current_user)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/articles/<int:article_id>/likes", methods=["DELETE"])
 @login_required_api
 def remove_like(article_id):
-    article = db.session.get(Article, article_id)
-    if not article:
-        abort(404)
-
-    like = Like.query.filter_by(user_id=g.current_user.id, article_id=article.id).first()
-    if not like:
-        return jsonify({"error": "Like non trovato"}), 404
-
-    db.session.delete(like)
-    db.session.commit()
-    return jsonify({"message": "Like rimosso"})
-
-
-# =====================================================
-# API CATEGORIES
-# =====================================================
-
-def _slugify(name: str) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
-    base = base.strip("-")
-    if not base:
-        base = "categoria"
-    slug = base
-    suffix = 1
-    while Category.query.filter_by(slug=slug).first():
-        suffix += 1
-        slug = f"{base}-{suffix}"
-    return slug
-
-
-def _get_or_create_category(name: str):
-    name = name.strip()
-    if not name:
-        return None
-    existing = Category.query.filter(db.func.lower(Category.name) == name.lower()).first()
-    if existing:
-        return existing
-    slug = _slugify(name)
-    new_cat = Category(name=name, slug=slug)
-    db.session.add(new_cat)
-    db.session.flush()  # ottieni id senza commit separato
-    return new_cat
+    """
+    Rimuove un like da un articolo
+    ---
+    tags:
+      - Likes
+    parameters:
+      - name: article_id
+        in: path
+        type: integer
+        required: true
+        description: ID dell'articolo
+    responses:
+      200:
+        description: Like rimosso con successo
+      401:
+        description: Token mancante o non valido
+      404:
+        description: Articolo o like non trovato
+    """
+    payload, status_code = LikeService.remove_like(article_id, g.current_user)
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/categories", methods=["GET"])
 def list_categories():
-    categories = Category.query.order_by(Category.name).all()
-    return jsonify([
-        {"id": c.id, "name": c.name, "slug": c.slug, "created_at": c.created_at.strftime("%Y-%m-%d")}
-        for c in categories
-    ])
+    """
+    Restituisce l'elenco delle categorie
+    ---
+    tags:
+      - Categories
+    responses:
+      200:
+        description: Lista categorie recuperata con successo
+    """
+    payload, status_code = CategoryService.list_categories()
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/categories", methods=["POST"])
 @login_required_api
 def create_category():
-    data = request.get_json()
-    name = (data or {}).get("name", "").strip()
-    if not name:
-        return jsonify({"error": "Nome categoria mancante"}), 400
-
-    slug = _slugify(name)
-    category = Category(name=name, slug=slug)
-    db.session.add(category)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({"error": "Categoria già esistente"}), 409
-
-    return jsonify({"message": "Categoria creata", "id": category.id, "slug": category.slug}), 201
+    """
+    Crea una nuova categoria
+    ---
+    tags:
+      - Categories
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            name:
+              type: string
+    responses:
+      201:
+        description: Categoria creata con successo
+      400:
+        description: Nome categoria mancante
+      401:
+        description: Token mancante o non valido
+      409:
+        description: Categoria gia esistente
+    """
+    payload, status_code = CategoryService.create_category(request.get_json())
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/categories/<int:category_id>", methods=["PUT"])
 @login_required_api
 @admin_required
 def update_category(category_id):
-    category = db.session.get(Category, category_id)
-    if not category:
-        abort(404)
-
-    data = request.get_json()
-    name = data.get("name", "").strip()
-    if not name:
-        return jsonify({"error": "Nome categoria mancante"}), 400
-
-    category.name = name
-    category.slug = _slugify(name)
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        return jsonify({"error": "Categoria già esistente"}), 409
-
-    return jsonify({"message": "Categoria aggiornata"})
+    """
+    Aggiorna una categoria esistente
+    ---
+    tags:
+      - Categories
+    parameters:
+      - name: category_id
+        in: path
+        type: integer
+        required: true
+        description: ID della categoria da aggiornare
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            name:
+              type: string
+    responses:
+      200:
+        description: Categoria aggiornata con successo
+      400:
+        description: Nome categoria mancante
+      401:
+        description: Token mancante o non valido
+      403:
+        description: Permessi insufficienti
+      404:
+        description: Categoria non trovata
+      409:
+        description: Categoria gia esistente
+    """
+    payload, status_code = CategoryService.update_category(category_id, request.get_json())
+    return jsonify(payload), status_code
 
 
 @api_bp.route("/categories/<int:category_id>", methods=["DELETE"])
 @login_required_api
 @admin_required
 def delete_category(category_id):
-    category = db.session.get(Category, category_id)
-    if not category:
-        abort(404)
+    """
+    Elimina una categoria esistente
+    ---
+    tags:
+      - Categories
+    parameters:
+      - name: category_id
+        in: path
+        type: integer
+        required: true
+        description: ID della categoria da eliminare
+    responses:
+      200:
+        description: Categoria eliminata con successo
+      401:
+        description: Token mancante o non valido
+      403:
+        description: Permessi insufficienti
+      404:
+        description: Categoria non trovata
+    """
+    payload, status_code = CategoryService.delete_category(category_id)
+    return jsonify(payload), status_code
 
-    # opzionale: scollega articoli dalla categoria
-    Article.query.filter_by(category_id=category.id).update({"category_id": None})
-    db.session.delete(category)
-    db.session.commit()
-    return jsonify({"message": "Categoria eliminata"})
-
-
-# =====================================================
-# DEV ONLY – CREA ADMIN
-# =====================================================
 
 @api_bp.route("/make-me-admin", methods=["POST"])
 @login_required_api
 def make_me_admin():
-    g.current_user.is_admin = True
-    db.session.commit()
-    return jsonify({"message": "Ora sei admin"})
+    """
+    Promuove l'utente autenticato a amministratore
+    ---
+    tags:
+      - Admin
+    responses:
+      200:
+        description: Utente promosso a admin
+      401:
+        description: Token mancante o non valido
+    """
+    payload, status_code = AdminService.make_me_admin(g.current_user)
+    return jsonify(payload), status_code
 
-
-# =====================================================
-# START
-# =====================================================
 
 app.register_blueprint(main_bp)
 app.register_blueprint(api_bp, url_prefix="/api")
@@ -822,9 +919,44 @@ with app.app_context():
                 if attempt == max_attempts:
                     raise
                 time.sleep(2)
-                
+
+
+@app.route("/api/stats")
+def get_stats():
+    # conta quanti articoli ci sono nel db
+    total_articles = Article.query.count()
+
+    # conta quanti commenti totali ci sono
+    total_comments = Comment.query.count()
+
+    # conta il numero totale di like (contando le righe nella tabella Like)
+    total_likes = Like.query.count()
+
+    return jsonify({
+        "articles": total_articles,
+        "comments": total_comments,
+        "likes": total_likes,
+        "server_id": socket.gethostname()
+    })
+
+
+@app.route("/api/health-check")
+def health_check():
+    return {
+      "server_id": socket.gethostname(),
+      "cpu_usage": psutil.cpu_percent(),
+      "memory_usage": psutil.virtual_memory().percent,
+      "status": "online"
+    }
+
+
+@app.errorhandler(404)
+def page_not_found(e):
+  # restituisce il template 404.html
+  return render_template("404.html"), 404
+
+
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
-
-
-
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True, allow_unsafe_werkzeug=True)

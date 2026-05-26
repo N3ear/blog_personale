@@ -27,23 +27,20 @@ async function authFetch(url, options = {}) {
 
 async function loadUser() {
     const res = await authFetch("/api/me");
-
     const userBar = document.getElementById("user-bar");
     const profileLinkContainer = document.getElementById("profile-link-container");
-
     if (res.status === 401) {
         userBar.innerHTML = `
             <p>Non sei loggato.
-            <a href="/login">Login</a></p>
+                <a href="/login">Login</a>
+            </p>
         `;
         if (profileLinkContainer) {
             profileLinkContainer.innerHTML = "";
         }
         return;
     }
-
     const user = await res.json();
-
     userBar.innerHTML = `
         <p>Ciao <strong>${user.username}</strong></p>
         <button onclick="logout()">Logout</button>
@@ -57,10 +54,7 @@ async function loadUser() {
 // LOGOUT
 // ==========================
 async function logout() {
-    const res = await authFetch("/api/logout", {
-        method: "POST"
-    });
-
+    const res = await authFetch("/api/logout", { method: "POST" });
     if (res.ok) {
         localStorage.removeItem("token");
         window.location.href = "/login";
@@ -69,21 +63,41 @@ async function logout() {
     }
 }
 
+// ==========================
+// UI HELPERS
+// ==========================
+// ==========================
+// TOAST NOTIFICATIONS
+// ==========================
+function showToast(message, type = 'success') {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    toast.className = `toast ${type === 'error' ? 'error' : ''}`;
+    toast.innerText = message;
 
-// ==========================
-// CARICA ARTICOLI
-// ==========================
-console.log("ARTICLES JS CARICATO")
+    container.appendChild(toast);
+
+    // Rimuovi il toast dopo 3 secondi
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => toast.remove(), 500);
+    }, 3000);
+}
 
 function showMessage(text, type = "error") {
-    const el = document.getElementById("message");
-    if (!el) return;
-    el.textContent = text;
-    el.className = `message ${type}`;
+    // Reindirizziamo a showToast per un'esperienza più moderna
+    showToast(text, type);
 }
 
 let currentUser = null;
 let categories = [];
+let isLoading = false;
 
 async function loadCurrentUser() {
     try {
@@ -98,7 +112,12 @@ async function loadCurrentUser() {
     }
 }
 
+// ==========================
+// CARICA ARTICOLI
+// ==========================
 async function loadArticles() {
+    if (isLoading) return;
+    isLoading = true;
     try {
         await loadCurrentUser();
         const res = await fetch("/api/articles");
@@ -107,30 +126,24 @@ async function loadArticles() {
             return;
         }
         const articles = await res.json();
-
         const container = document.getElementById("articles-container");
         container.innerHTML = "";
-
         if (articles.length === 0) {
             container.innerHTML = "<p>Nessun articolo presente</p>";
             return;
         }
-
         articles.forEach(article => {
             const div = document.createElement("div");
-            div.classList.add("article");
-
-            const canManageArticle = currentUser
-                && (currentUser.is_admin || currentUser.id === article.author_id);
-
+            div.classList.add("article", "card");
+            const canManageArticle = currentUser && (currentUser.is_admin || currentUser.id === article.author_id);
             div.innerHTML = `
-                <h2>${article.title}</h2>
-                ${article.image ? `<img src="/static/uploads/${article.image}" alt="Immagine articolo" style="max-width: 100%; display: block; border-radius: 10px; margin: 8px 0;">` : ""}
+                <h2 class="titolo-articolo">${article.title}</h2>
+                ${article.image ? `<img src="/static/uploads/${article.image}" alt="Immagine articolo" style="max-width:100%;display:block;border-radius:10px;margin:8px 0;"/>` : ""}
                 <p>${article.content}</p>
                 <small>Autore: ${article.author}</small>
                 <div class="meta-line">
                     <span class="badge">Like: <span id="like-count-${article.id}">${article.likes}</span></span>
-                    ${article.category ? `<span class="badge">Categoria: ${article.category}</span>` : ""}
+                    ${article.category ? `<span class="badge category-badge" data-category="${article.category.toLowerCase()}">Categoria: ${article.category}</span>` : ""}
                 </div>
                 <div class="like-row">
                     <button onclick="addLike(${article.id})" aria-label="Mi piace">👍</button>
@@ -140,7 +153,7 @@ async function loadArticles() {
                     <button onclick="toggleEditArticle(${article.id})">Modifica articolo</button>
                     <button onclick="deleteArticle(${article.id})">Elimina articolo</button>
                 ` : ""}
-                <div id="edit-article-${article.id}" style="display:none; margin-top: 8px;">
+                <div id="edit-article-${article.id}" style="display:none;margin-top:8px;">
                     <input type="text" id="edit-title-${article.id}" value="${article.title}">
                     <textarea id="edit-content-${article.id}" rows="4">${article.content}</textarea>
                     ${renderCategorySelect(`edit-category-${article.id}`, article.category_id)}
@@ -148,24 +161,19 @@ async function loadArticles() {
                     <button onclick="saveArticle(${article.id})">Salva</button>
                     <button onclick="toggleEditArticle(${article.id})">Annulla</button>
                 </div>
-
                 <h4>Commenti</h4>
-                <div id="comments-${article.id}">
-                    <p>Caricamento commenti...</p>
-                </div>
-
+                <div id="comments-${article.id}"><p>Caricamento commenti...</p></div>
                 <input type="text" id="comment-${article.id}" placeholder="Scrivi un commento">
                 <button onclick="addComment(${article.id})">Invia</button>
-
                 <hr>
             `;
-
             container.appendChild(div);
-
             loadComments(article.id);
         });
     } catch (err) {
         showMessage("Errore di rete nel caricamento degli articoli.");
+    } finally {
+        isLoading = false;
     }
 }
 
@@ -180,22 +188,16 @@ async function loadComments(articleId) {
             return;
         }
         const comments = await res.json();
-
         const container = document.getElementById(`comments-${articleId}`);
         container.innerHTML = "";
-
         if (comments.length === 0) {
             container.innerHTML = "<p>Nessun commento</p>";
             return;
         }
-
         comments.forEach(c => {
             const div = document.createElement("div");
             div.classList.add("comment");
-
-            const canManageComment = currentUser
-                && (currentUser.is_admin || currentUser.id === c.author_id);
-
+            const canManageComment = currentUser && (currentUser.is_admin || currentUser.id === c.author_id);
             div.innerHTML = `
                 <p><strong>${c.author}</strong>: ${c.content}</p>
                 <small>${c.date_posted}</small>
@@ -203,13 +205,12 @@ async function loadComments(articleId) {
                     <button onclick="toggleEditComment(${c.id})">Modifica commento</button>
                     <button onclick="deleteComment(${c.id}, ${articleId})">Elimina commento</button>
                 ` : ""}
-                <div id="edit-comment-${c.id}" style="display:none; margin-top: 6px;">
+                <div id="edit-comment-${c.id}" style="display:none;margin-top:6px;">
                     <input type="text" id="edit-comment-content-${c.id}" value="${c.content}">
                     <button onclick="saveComment(${c.id}, ${articleId})">Salva</button>
                     <button onclick="toggleEditComment(${c.id})">Annulla</button>
                 </div>
             `;
-
             container.appendChild(div);
         });
     } catch (err) {
@@ -218,55 +219,66 @@ async function loadComments(articleId) {
 }
 
 // ==========================
-// CREA ARTICOLO
+// CREA ARTICOLO (FORMDATA)
 // ==========================
 async function createArticle() {
-    const title = document.getElementById("title").value;
-    const content = document.getElementById("content").value;
-    const imageInput = document.getElementById("image");
-    const imageFile = imageInput?.files?.[0];
-    const categoryId = document.getElementById("category-select")?.value || "";
+    const title = document.getElementById("title").value.trim();
+    const content = document.getElementById("content").value.trim();
+    const categoryId = document.getElementById("category-select")?.value;
     const categoryName = document.getElementById("category-name")?.value.trim();
+    const imageFile = document.getElementById("image")?.files[0];
+
+    if (!title || !content) {
+        showMessage("Titolo e contenuto sono obbligatori.");
+        return;
+    }
 
     const formData = new FormData();
     formData.append("title", title);
     formData.append("content", content);
+    
     if (categoryName) {
         formData.append("category_name", categoryName);
     } else if (categoryId) {
         formData.append("category_id", categoryId);
     }
-
+    
     if (imageFile) {
         formData.append("image", imageFile);
     }
 
-    authFetch("/api/articles", {
+    const res = await authFetch("/api/articles", {
         method: "POST",
-        headers: getAuthHeaders(),
+        headers: getAuthHeaders(), // Content-Type is automatically set by fetch when body is FormData
         body: formData
-    })
-        .then(async response => {
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error(data.error || "Errore nella creazione dell'articolo");
-            }
-            return data;
-        })
-        .then(data => {
-            console.log("Articolo creato:", data);
-            document.getElementById("title").value = "";
-            document.getElementById("content").value = "";
-            if (imageInput) {
-                imageInput.value = "";
-            }
-            loadArticles();
-            showMessage("Articolo creato con successo.", "success");
-        })
-        .catch(error => {
-            console.error("Errore:", error);
-            showMessage(error.message || "Errore nella creazione dell'articolo.");
-        });
+    });
+    
+    let data;
+    try {
+        data = await res.json();
+    } catch (e) {
+        data = { error: "Errore di parsing JSON" };
+    }
+    
+    if (!res.ok) {
+        const errMsg = data.error ? (typeof data.error === 'object' ? JSON.stringify(data.error) : data.error) : "Errore nella creazione dell'articolo";
+        showMessage(errMsg);
+        return;
+    }
+    // clear form fields
+    document.getElementById("title").value = "";
+    document.getElementById("content").value = "";
+    const catSelect = document.getElementById("category-select");
+    if (catSelect) catSelect.value = "";
+    const catName = document.getElementById("category-name");
+    if (catName) catName.value = "";
+    const imageInput = document.getElementById("image");
+    if (imageInput) imageInput.value = "";
+    
+    await loadCategories();
+    await loadArticles();
+    caricaStatistiche();
+    showMessage("Articolo creato con successo.", "success");
 }
 
 // ==========================
@@ -274,25 +286,20 @@ async function createArticle() {
 // ==========================
 async function addComment(articleId) {
     const input = document.getElementById(`comment-${articleId}`);
-    const content = input.value;
-
+    const content = input.value.trim();
     if (!content) {
         showMessage("Scrivi un commento prima di inviare.");
         return;
     }
-
     const res = await authFetch(`/api/articles/${articleId}/comments`, {
         method: "POST",
-        headers: {
-            ...getAuthHeaders(),
-            "Content-Type": "application/json"
-        },
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ content })
     });
-
     if (res.ok) {
         input.value = "";
         loadComments(articleId);
+        caricaStatistiche();
         showMessage("Commento inviato.", "success");
     } else {
         showMessage("Errore nell'invio del commento. Riprova.");
@@ -309,17 +316,13 @@ function toggleEditArticle(articleId) {
 }
 
 async function saveArticle(articleId) {
-    const title = document.getElementById(`edit-title-${articleId}`).value;
-    const content = document.getElementById(`edit-content-${articleId}`).value;
+    const title = document.getElementById(`edit-title-${articleId}`).value.trim();
+    const content = document.getElementById(`edit-content-${articleId}`).value.trim();
     const categoryId = document.getElementById(`edit-category-${articleId}`)?.value;
-    const categoryName = document.getElementById(`edit-category-name-${articleId}`)?.value.trim();
-
+    const categoryName = document.getElementById(`edit-category-name-${articleId}`).value.trim();
     const res = await authFetch(`/api/articles/${articleId}`, {
         method: "PUT",
-        headers: {
-            ...getAuthHeaders(),
-            "Content-Type": "application/json"
-        },
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
             title,
             content,
@@ -327,9 +330,9 @@ async function saveArticle(articleId) {
             category_name: categoryName || undefined
         })
     });
-
     if (res.ok) {
-        loadArticles();
+        await loadCategories();
+        await loadArticles();
         showMessage("Articolo aggiornato.", "success");
     } else {
         showMessage("Errore nella modifica dell'articolo. Riprova.");
@@ -346,17 +349,12 @@ function toggleEditComment(commentId) {
 }
 
 async function saveComment(commentId, articleId) {
-    const content = document.getElementById(`edit-comment-content-${commentId}`).value;
-
+    const content = document.getElementById(`edit-comment-content-${commentId}`).value.trim();
     const res = await authFetch(`/api/comments/${commentId}`, {
         method: "PUT",
-        headers: {
-            ...getAuthHeaders(),
-            "Content-Type": "application/json"
-        },
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ content })
     });
-
     if (res.ok) {
         loadComments(articleId);
         showMessage("Commento aggiornato.", "success");
@@ -370,16 +368,11 @@ async function saveComment(commentId, articleId) {
 // ==========================
 async function deleteArticle(articleId) {
     const confirmed = confirm("Sei sicuro di voler eliminare questo articolo?");
-    if (!confirmed) {
-        return;
-    }
-
-    const res = await authFetch(`/api/articles/${articleId}`, {
-        method: "DELETE"
-    });
-
+    if (!confirmed) return;
+    const res = await authFetch(`/api/articles/${articleId}`, { method: "DELETE" });
     if (res.ok) {
         loadArticles();
+        caricaStatistiche();
         showMessage("Articolo eliminato.", "success");
     } else {
         showMessage("Errore nell'eliminazione dell'articolo. Riprova.");
@@ -391,58 +384,40 @@ async function deleteArticle(articleId) {
 // ==========================
 async function deleteComment(commentId, articleId) {
     const confirmed = confirm("Sei sicuro di voler eliminare questo commento?");
-    if (!confirmed) {
-        return;
-    }
-
-    const res = await authFetch(`/api/comments/${commentId}`, {
-        method: "DELETE"
-    });
-
+    if (!confirmed) return;
+    const res = await authFetch(`/api/comments/${commentId}`, { method: "DELETE" });
     if (res.ok) {
         loadComments(articleId);
+        caricaStatistiche();
         showMessage("Commento eliminato.", "success");
     } else {
         showMessage("Errore nell'eliminazione del commento. Riprova.");
     }
 }
 
-// AVVIO
-async function init() {
-    await loadCategories();
-    loadArticles();
-    loadUser();
-}
-
-init();
-
 // ==========================
 // CATEGORIE
 // ==========================
 function renderCategorySelect(elementId, selectedId = null) {
     const options = ['<option value="">Senza categoria</option>']
-        .concat(categories.map(c =>
-            `<option value="${c.id}" ${selectedId === c.id ? "selected" : ""}>${c.name}</option>`
-        ));
+        .concat(categories.map(c => `<option value="${c.id}" ${selectedId === c.id ? "selected" : ""}>${c.name}</option>`));
     return `<select id="${elementId}" class="select-cat">${options.join("")}</select>`;
 }
 
 async function loadCategories() {
     try {
-        await loadCurrentUser();
         const res = await fetch("/api/categories");
         if (!res.ok) return;
         categories = await res.json();
+        
+        // Aggiorna il select della creazione
         const select = document.getElementById("category-select");
         if (select) {
             select.innerHTML = renderCategorySelect("category-select").replace(/^<select[^>]*>|<\/select>$/g, "");
         }
-        // aggiorna select negli editor articoli
-        document.querySelectorAll("[id^='edit-category-']").forEach(sel => {
-            const id = sel.id;
-            const current = sel.getAttribute("data-selected-id");
-            sel.innerHTML = renderCategorySelect(id, current ? Number(current) : null).replace(/^<select[^>]*>|<\/select>$/g, "");
-        });
+        
+        // Aggiorna i filtri in alto
+        renderCategoryFilters();
     } catch (e) {
         console.error("Errore caricamento categorie", e);
     }
@@ -479,7 +454,113 @@ async function refreshLikes(articleId, success) {
         const data = await countRes.json();
         const el = document.getElementById(`like-count-${articleId}`);
         if (el) el.textContent = data.likes;
+        caricaStatistiche();
     } else {
         loadArticles();
     }
 }
+
+// ==========================
+// FILTRO CATEGORIE
+// ==========================
+function renderCategoryFilters() {
+    const container = document.getElementById("category-filters");
+    if (!container) return;
+
+    let html = `<button class="pill-button active" data-cat="" onclick="filterByCategory('')">Tutte</button>`;
+    categories.forEach(cat => {
+        html += `<button class="pill-button" data-cat="${cat.name.toLowerCase()}" onclick="filterByCategory('${cat.name.toLowerCase()}')">${cat.name}</button>`;
+    });
+    container.innerHTML = html;
+}
+
+function toggleCategorySection() {
+    const section = document.getElementById("category-filters");
+    if (!section) return;
+    section.style.display = (section.style.display === "none" || section.style.display === "") ? "flex" : "none";
+}
+
+function filterByCategory(categoryName) {
+    // Aggiorna lo stato visivo dei bottoni
+    document.querySelectorAll("#category-filters .pill-button").forEach(btn => {
+        if (btn.getAttribute("data-cat") === categoryName) {
+            btn.classList.add("active");
+        } else {
+            btn.classList.remove("active");
+        }
+    });
+
+    filtraArticoli(categoryName, true);
+    // Richiudi la sezione dopo la scelta
+    toggleCategorySection();
+}
+
+// ==========================
+// STATISTICHE
+// ==========================
+async function caricaStatistiche() {
+    try {
+        const res = await fetch("/api/stats");
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        document.getElementById("stat-articles").textContent = data.articles;
+        document.getElementById("stat-comments").textContent = data.comments;
+        document.getElementById("stat-likes").textContent = data.likes;
+    } catch (err) {
+        console.error("Errore caricamento statistiche", err);
+    }
+}
+
+async function init() {
+    await loadCategories();
+    await loadArticles();
+    await loadUser();
+    await caricaStatistiche();
+}
+
+// ==========================
+// RICERCA ARTICOLI
+// ==========================
+function filtraArticoli(filterValue = "", isCategory = false) {
+    let input = filterValue.toLowerCase().trim();
+    
+    let cards = document.querySelectorAll('#articles-container .article');
+
+    cards.forEach(card => {
+        // Se non c'è filtro, mostra tutto
+        if (!input) {
+            card.style.setProperty('display', 'block', 'important');
+            return;
+        }
+
+        if (isCategory) {
+            // Filtro STRETTO per categoria
+            const catBadge = card.querySelector('.category-badge');
+            const articleCat = catBadge ? catBadge.getAttribute('data-category') : "";
+            
+            if (articleCat === input) {
+                card.style.setProperty('display', 'block', 'important');
+            } else {
+                card.style.setProperty('display', 'none', 'important');
+            }
+        } else {
+            // Ricerca testuale generica
+            let keywords = input.split(/\s+/).filter(k => k.length > 0);
+            let titolo = card.querySelector('h2')?.innerText.toLowerCase() || "";
+            let contenuto = card.querySelector('p')?.innerText.toLowerCase() || "";
+            let badges = Array.from(card.querySelectorAll('.badge')).map(b => b.innerText.toLowerCase()).join(" ");
+            
+            let testoCard = (titolo + " " + contenuto + " " + badges).trim();
+            let matches = keywords.every(kw => testoCard.includes(kw));
+
+            if (matches) {
+                card.style.setProperty('display', 'block', 'important');
+            } else {
+                card.style.setProperty('display', 'none', 'important');
+            }
+        }
+    });
+}
+
+init();

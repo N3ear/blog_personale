@@ -1,0 +1,73 @@
+<div class="dashboard-section container">
+    <h2 style="text-align: center; margin-bottom: 30px;">🛰️ Cluster Status Dashboard</h2>
+    
+    <div id="server-list">
+        <!-- I server verranno inseriti qui dal JavaScript -->
+    </div>  
+</div>
+
+<script>
+    const serverList = document.getElementById('server-list');
+    const knownServers = {}; // Qui teniamo traccia dei server già creati
+
+    async function refreshStats() {
+        try {
+            const response = await fetch('/api/health-check');
+            if (!response.ok) throw new Error("Server unreachable");
+            
+            const data = await response.json();
+            const id = data.server_id;
+
+            // Se il server non è ancora nella lista, creiamo il box HTML
+            if (!knownServers[id]) {
+                knownServers[id] = true;
+                const card = document.createElement('div');
+                card.id = `card-${id}`;
+                card.className = 'server-card';
+                // Usiamo il template avanzato con le barre di progresso
+                card.innerHTML = `
+                    <h3><span class="server-status"></span> ${id.substring(0, 12)}</h3>
+                    <div class="server-info">
+                        <div><strong>STATUS:</strong> ONLINE</div>
+                        <div><strong>CPU:</strong> <span class="cpu">0</span>%</div>
+                        <div class="progress-mini"><div class="cpu-bar" style="width: 0%; height: 4px; background: #00ff00;"></div></div>
+                        <div><strong>RAM:</strong> <span class="ram">0</span>%</div>
+                        <div class="progress-mini"><div class="ram-bar" style="width: 0%; height: 4px; background: #00ff00;"></div></div>
+                        <div style="margin-top: 10px; font-size: 0.7rem; color: #666;">LAST_UPDATE: <span class="time">--:--:--</span></div>
+                    </div>
+                `;
+                serverList.appendChild(card);
+            }
+
+            // Aggiorniamo i dati (CPU e RAM) della card specifica
+            const currentCard = document.getElementById(`card-${id}`);
+            currentCard.querySelector('.cpu').innerText = data.cpu_usage;
+            currentCard.querySelector('.ram').innerText = data.memory_usage;
+            currentCard.querySelector('.cpu-bar').style.width = data.cpu_usage + "%";
+            currentCard.querySelector('.ram-bar').style.width = data.memory_usage + "%";
+            currentCard.querySelector('.time').innerText = new Date().toLocaleTimeString();
+
+            // Effetto visivo: facciamo "pulsare" il server attivo
+            currentCard.classList.add('active');
+            setTimeout(() => currentCard.classList.remove('active'), 600);
+
+        } catch (error) {
+            console.error("Errore nel fetch monitoraggio:", error);
+        }
+    }
+
+    // Avviamo il monitoraggio ogni secondo
+    refreshStats();
+    setInterval(refreshStats, 1000);
+</script>
+
+<style>
+    .progress-mini {
+        width: 100%;
+        height: 4px;
+        background: #333;
+        margin: 4px 0 10px 0;
+        border-radius: 2px;
+        overflow: hidden;
+    }
+</style>

@@ -5,18 +5,26 @@
     <title>Profilo di {{ user.username }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+
 </head>
 <body>
     <div class="container">
         <div class="profile-card">
             <h1>Profilo di {{ user.username }}</h1>
 
-            {% if user.profile_image %}
-                <img
-                    class="profile-avatar"
-                    src="{{ url_for('static', filename='immagini_profilo/' + user.profile_image) }}"
-                    alt="Foto profilo">
-            {% endif %}
+            <div class="profile-img-container" style="text-align: center; margin-bottom: 20px;">
+                <img src="{{ url_for('static', filename='immagini_profilo/' + (user.profile_image or 'default.png')) }}" 
+                     alt="Avatar" 
+                     style="width: 120px; height: 120px; border-radius: 50%; object-fit: cover; border: 3px solid #ff4d4d; box-shadow: 0px 0px 15px rgba(255, 77, 77, 0.5);">
+                
+                <form id="avatar-upload-form" action="{{ url_for('api.update_profile', username=user.username) }}" method="POST" enctype="multipart/form-data" style="margin-top: 15px;">
+                    <input type="hidden" name="profile_name" value="{{ user.profile_name }}">
+                    <label for="file-upload" style="cursor: pointer; background: #222; padding: 5px 10px; border-radius: 5px; font-size: 0.8em; border: 1px solid #444;">
+                        Scegli Foto
+                    </label>
+                    <input id="file-upload" type="file" name="profile_image" accept="image/*" style="display: none;">
+                </form>
+            </div>
 
             <h2>{{ user.profile_name }}</h2>
 

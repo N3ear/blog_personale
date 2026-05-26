@@ -113,6 +113,29 @@ document.addEventListener("DOMContentLoaded", async () => {
                 passwordForm.style.display = "none";
             });
         }
+        
+        // Gestione caricamento avatar automatico
+        const avatarInput = document.getElementById("file-upload");
+        const avatarForm = document.getElementById("avatar-upload-form");
+        if (avatarInput && avatarForm) {
+            avatarInput.addEventListener("change", async () => {
+                const formData = new FormData(avatarForm);
+                const res = await fetch(avatarForm.action, {
+                    method: "POST",
+                    headers: { "Authorization": "Bearer " + token },
+                    body: formData
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    showProfileMessage(data.error || "Errore caricamento avatar");
+                    return;
+                }
+
+                showProfileMessage("Avatar aggiornato!", "success");
+                setTimeout(() => window.location.reload(), 600);
+            });
+        }
     } catch (err) {
         showProfileMessage("Errore di rete. Controlla la connessione e riprova.");
     }

@@ -5,12 +5,15 @@
     <title>Benvenuto</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 <body>
 
 <div class="container">
     <div class="article">
         <h1>Benvenuto nel blog</h1>
+        <p id="socket-status" style="font-size: 0.8em; color: gray;">Connessione in corso...</p>
+        
         <p>Per continuare, accedi o crea un account.</p>
 
         <div class="stack">
@@ -21,5 +24,29 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
+
+<script>
+    // Si connette al server Flask-SocketIO
+    const socket = io();
+
+    socket.on('connect', () => {
+        console.log("Connesso al server WebSocket!");
+        document.getElementById('socket-status').innerText = "Sistema Real-Time Attivo ✅";
+        document.getElementById('socket-status').style.color = "#4CAF50"; // Verde
+    });
+
+    // Ascolta il segnale inviato dal Worker
+    socket.on('notifica_email', function(data) {
+        console.log("Notifica ricevuta:", data);
+        // Mostra un alert professionale o un messaggio a schermo
+        alert("Notifica dal Server: " + data.message);
+    });
+
+    socket.on('disconnect', () => {
+        document.getElementById('socket-status').innerText = "Sistema Offline ❌";
+        document.getElementById('socket-status').style.color = "#f44336"; // Rosso
+    });
+</script>
+
 </body>
 </html>
